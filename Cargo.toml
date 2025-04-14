@@ -1,0 +1,25 @@
+[package]
+name = "lazydata"
+version = "0.1.0"
+description = "a cli tool for database systems"
+authors = ["Ye Lin Ko <yelinko.2002@gmail.com>"]
+license = "MIT"
+edition = "2024"
+
+[dependencies]
+color-eyre = "0.6.3"
+colored = "2.0"
+clap = { version = "4.5.20", features = [
+    "derive",
+    "cargo",
+    "wrap_help",
+    "unicode",
+    "string",
+    "unstable-styles"
+] }
+crossterm = { version = "0.28.1", features = ["event-stream"] }
+futures = "0.3.31"
+ratatui = "0.29.0"
+sqlx = { version = "0.8.3", features = ["postgres", "mysql", "sqlite", "runtime-tokio", "macros"] }
+tokio = { version = "1.40.0", features = ["full"] }
+ 
