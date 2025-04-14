@@ -21,5 +21,5 @@ crossterm = { version = "0.28.1", features = ["event-stream"] }
 futures = "0.3.31"
 ratatui = "0.29.0"
 sqlx = { version = "0.8.3", features = ["postgres", "mysql", "sqlite", "runtime-tokio", "macros"] }
-tokio = { version = "1.40.0", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
  
