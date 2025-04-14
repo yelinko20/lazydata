@@ -8,7 +8,7 @@ edition = "2024"
 
 [dependencies]
 color-eyre = "0.6.3"
-colored = "2.0"
+colored = "3.0"
 clap = { version = "4.5.36", features = [
     "derive",
     "cargo",
