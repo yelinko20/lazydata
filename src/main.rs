@@ -1,11 +1,14 @@
 mod database;
 
-use std::{io::{stdout, Stdout, Write}, time::Duration};
+use std::{
+    io::{stdout, Stdout, Write},
+    time::Duration,
+};
 
 use color_eyre::eyre::Result;
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{self, Event, KeyCode,  KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind},
     execute,
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
@@ -28,8 +31,9 @@ fn drain_initial_events() -> Result<()> {
     Ok(())
 }
 
-fn render_menu<W: Write>(out: &mut W, databases: &Vec<String>, selected: usize) -> Result<()> {
+fn render_menu<W: Write>(out: &mut W, databases: &[String], selected: usize) -> Result<()> {
     execute!(out, MoveTo(0, 0), Clear(ClearType::All))?;
+
     let title = "🚀 Select a Database";
     let instructions = "(Use ↑ ↓ arrows, Enter to select, q to quit)\n";
 
@@ -50,13 +54,14 @@ fn render_menu<W: Write>(out: &mut W, databases: &Vec<String>, selected: usize) 
             writeln!(out, "  {}", db)?;
         }
     }
+
     out.flush()?;
     Ok(())
 }
 
 fn handle_input(
     stdout: &mut Stdout,
-    databases: &Vec<String>,
+    databases: &[String],
     selected_index: &mut usize,
 ) -> Result<Option<usize>> {
     loop {
@@ -67,13 +72,13 @@ fn handle_input(
                         KeyCode::Up => {
                             if *selected_index > 0 {
                                 *selected_index -= 1;
-                                let _ = render_menu(stdout, &databases.clone(), *selected_index);
+                                let _ = render_menu(stdout, databases, *selected_index);
                             }
                         }
                         KeyCode::Down => {
-                            if *selected_index < databases.len() - 1 {
+                            if *selected_index < databases.len().saturating_sub(1) {
                                 *selected_index += 1;
-                                let _ = render_menu(stdout, &databases.clone(), *selected_index);
+                                let _ = render_menu(stdout, databases, *selected_index);
                             }
                         }
                         KeyCode::Enter => {
@@ -109,5 +114,6 @@ async fn main() -> Result<()> {
         Some(index) => println!("\n✅ You selected: {}", databases[index]),
         None => println!("\n👋 Exited without selection."),
     }
+
     Ok(())
 }

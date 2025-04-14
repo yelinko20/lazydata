@@ -9,7 +9,7 @@ pub struct DatabaseChecker {
 }
 
 pub fn get_installed_databases() -> Result<Vec<String>> {
-    let db_tools = vec![
+    let db_tools = [
         DatabaseChecker {
             name: "PostgresSQL",
             command: "pg_isready",
@@ -46,5 +46,6 @@ pub fn get_installed_databases() -> Result<Vec<String>> {
             }
         }
     }
+
     Ok(found)
 }
