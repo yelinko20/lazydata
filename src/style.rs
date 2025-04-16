@@ -39,3 +39,56 @@ impl StyleProvider for DefaultStyle {
             .add_modifier(Modifier::BOLD)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::{Color, Modifier, Style};
+
+    #[test]
+    fn test_border_style_when_focused() {
+        let style = DefaultStyle {
+            focus: Focus::Sidebar,
+        };
+        let result = style.border_style(Focus::Sidebar);
+        assert_eq!(
+            result,
+            Style::default()
+                .fg(Color::Rgb(137, 220, 235))
+                .add_modifier(Modifier::BOLD)
+        )
+    }
+
+    #[test]
+    fn test_block_style() {
+        let style = DefaultStyle {
+            focus: Focus::Sidebar,
+        };
+        let result = style.block_style();
+        assert_eq!(result, Style::default().bg(Color::Rgb(30, 30, 46)))
+    }
+
+    #[test]
+    fn test_text_style() {
+        let style = DefaultStyle {
+            focus: Focus::Sidebar,
+        };
+        let result = style.text_style();
+        assert_eq!(result, Style::default().fg(Color::Rgb(205, 214, 244)))
+    }
+
+    #[test]
+    fn test_highlight_style() {
+        let style = DefaultStyle {
+            focus: Focus::Sidebar,
+        };
+        let result = style.highlight_style();
+        assert_eq!(
+            result,
+            Style::default()
+                .bg(Color::Rgb(137, 220, 235))
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        )
+    }
+}
