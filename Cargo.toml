@@ -23,4 +23,4 @@ inquire = "0.7.5"
 ratatui = "0.29.0"
 sqlx = { version = "0.8.3", features = ["postgres", "mysql", "sqlite", "runtime-tokio", "macros"] }
 tokio = { version = "1.44.2", features = ["full"] }
- 
+unicode-width = "0.2.0"

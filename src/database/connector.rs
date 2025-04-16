@@ -31,6 +31,30 @@ impl std::fmt::Display for DatabaseType {
     }
 }
 
+impl ConnectionDetails {
+    pub fn connection_string(&self) -> String {
+        match self.db_type {
+            DatabaseType::PostgresSQL => format!(
+                "postgres://{}:{}@{}:{}/{}",
+                self.username.as_deref().unwrap_or(""),
+                self.password.as_deref().unwrap_or(""),
+                self.host.as_deref().unwrap_or("localhost"),
+                self.port.unwrap_or(5432),
+                self.database.as_deref().unwrap_or("")
+            ),
+            DatabaseType::MySQL => format!(
+                "postgres://{}:{}@{}:{}/{}",
+                self.username.as_deref().unwrap_or(""),
+                self.password.as_deref().unwrap_or(""),
+                self.host.as_deref().unwrap_or("localhost"),
+                self.port.unwrap_or(3306),
+                self.database.as_deref().unwrap_or("")
+            ),
+            DatabaseType::SQLite => self.file_path.as_deref().unwrap_or("").to_string(),
+        }
+    }
+}
+
 pub fn get_connection_details(db_type: DatabaseType) -> Result<ConnectionDetails> {
     match db_type {
         DatabaseType::SQLite => {
