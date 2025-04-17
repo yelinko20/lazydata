@@ -16,7 +16,7 @@ pub async fn pool(
     let conn_str = &details.connection_string();
 
     let pool = match db_type {
-        DatabaseType::PostgresSQL => {
+        DatabaseType::PostgreSQL => {
             let pool = PgPool::connect(conn_str).await?;
             DbPool::Postgres(pool)
         }

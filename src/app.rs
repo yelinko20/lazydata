@@ -74,7 +74,7 @@ impl App {
 
     fn map_db_name_to_type(name: &str) -> Option<DatabaseType> {
         match name.to_lowercase().as_str() {
-            "postgresql" => Some(DatabaseType::PostgresSQL),
+            "postgresql" => Some(DatabaseType::PostgreSQL),
             "mysql" => Some(DatabaseType::MySQL),
             "sqlite" => Some(DatabaseType::SQLite),
             _ => None,
