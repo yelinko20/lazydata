@@ -1,25 +1,24 @@
-use std::{io::stdout, time::Duration};
-
-use crate::layout::{
-    data_table::DataTable, query_editor::render_query_editor, sidebar::render_sidebar,
+use crate::layout::{data_table::DataTable, sidebar::Sidebar};
+use crate::{
+    database::{
+        connector::{ConnectionDetails, DatabaseType, get_connection_details},
+        detector::get_installed_databases,
+        fetch::get_tables,
+        pool::pool,
+    },
+    layout::query_editor::QueryEditor,
 };
 use color_eyre::eyre::Result;
 use crossterm::{
     ExecutableCommand,
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
 };
+use inquire::Select;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
 };
-
-use crate::database::{
-    connector::{ConnectionDetails, DatabaseType, get_connection_details},
-    detector::get_installed_databases,
-    fetch::get_tables,
-    pool::pool,
-};
-use inquire::Select;
+use std::{io::stdout, time::Duration};
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum Focus {
@@ -28,12 +27,23 @@ pub enum Focus {
     Table,
 }
 
+impl Focus {
+    fn next(self) -> Self {
+        match self {
+            Focus::Sidebar => Focus::Editor,
+            Focus::Editor => Focus::Table,
+            Focus::Table => Focus::Sidebar,
+        }
+    }
+}
+
 pub struct App {
     pub focus: Focus,
     pub query: String,
-    pub sidebar_items: Vec<String>,
     pub exit: bool,
     pub data_table: DataTable,
+    pub query_editor: QueryEditor,
+    pub sidebar: Sidebar,
 }
 
 impl App {
@@ -41,9 +51,10 @@ impl App {
         Self {
             focus: Focus::Sidebar,
             query: String::new(),
-            sidebar_items: vec![],
             exit: false,
             data_table: DataTable::new(vec![], vec![]),
+            query_editor: QueryEditor::new(),
+            sidebar: Sidebar::new(vec![], Focus::Sidebar),
         }
     }
 
@@ -104,9 +115,11 @@ impl App {
     }
 
     fn setup_ui(&mut self, sidebar_items: Vec<String>) {
-        self.sidebar_items = sidebar_items;
         self.focus = Focus::Sidebar;
         self.query = String::new();
+        self.sidebar.update_items(sidebar_items);
+        self.sidebar.update_focus(Focus::Sidebar);
+
         self.data_table = DataTable::new(
             vec!["ID".into(), "Name".into(), "Value".into()],
             vec![
@@ -126,19 +139,47 @@ impl App {
 
     fn handle_events(&mut self) -> Result<()> {
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') => self.exit = true,
-                    KeyCode::Tab => self.toggle_focus(),
-                    KeyCode::Down => self.handle_down_key(),
-                    KeyCode::Up => self.handle_up_key(),
-                    KeyCode::Left => self.handle_left_key(),
-                    KeyCode::Right => self.handle_right_key(),
-                    _ => {}
+            if let Event::Key(key_event) = event::read()? {
+                if key_event.kind == KeyEventKind::Press {
+                    match key_event.code {
+                        KeyCode::Char('q') => {
+                            self.exit = true;
+                        }
+                        KeyCode::Tab => {
+                            self.toggle_focus();
+                        }
+                        key => match self.focus {
+                            Focus::Editor => self.handle_query_editor_keys(key),
+                            Focus::Table => self.handle_data_table_keys(key),
+                            _ => {}
+                        },
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    fn handle_query_editor_keys(&mut self, key: KeyCode) {
+        use KeyCode::*;
+        match key {
+            Char(c) => self.query_editor.enter_char(c),
+            Backspace => self.query_editor.delete_char(),
+            Left => self.query_editor.move_cursor_left(),
+            Right => self.query_editor.move_cursor_right(),
+            _ => {}
+        }
+    }
+
+    fn handle_data_table_keys(&mut self, key: KeyCode) {
+        use KeyCode::*;
+        match key {
+            Char('j') | Down => self.data_table.next_row(),
+            Char('k') | Up => self.data_table.previous_row(),
+            Char('l') | Right => self.data_table.next_column(),
+            Char('h') | Left => self.data_table.previous_column(),
+            _ => {}
+        }
     }
 
     fn render_ui(&mut self, f: &mut Frame) {
@@ -147,46 +188,19 @@ impl App {
             .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
             .split(f.area());
 
-        f.render_widget(render_sidebar(self), layout[0]);
+        f.render_widget(self.sidebar.render(), layout[0]);
 
         let right = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(layout[1]);
 
-        f.render_widget(render_query_editor(self), right[0]);
+        self.query_editor.draw(f, right[0], self.focus.clone());
         self.data_table.draw(f, right[1]);
     }
 
     fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::Sidebar => Focus::Editor,
-            Focus::Editor => Focus::Table,
-            Focus::Table => Focus::Sidebar,
-        };
-    }
-
-    fn handle_down_key(&mut self) {
-        if self.focus == Focus::Table {
-            self.data_table.next_row();
-        }
-    }
-
-    fn handle_up_key(&mut self) {
-        if self.focus == Focus::Table {
-            self.data_table.previous_row();
-        }
-    }
-
-    fn handle_left_key(&mut self) {
-        if self.focus == Focus::Table {
-            self.data_table.previous_column();
-        }
-    }
-
-    fn handle_right_key(&mut self) {
-        if self.focus == Focus::Table {
-            self.data_table.next_column();
-        }
+        self.focus = self.focus.clone().next();
+        self.sidebar.update_focus(self.focus.clone());
     }
 }
