@@ -1,9 +1,10 @@
-use crate::layout::{data_table::DataTable, sidebar::Sidebar};
+use crate::database::fetch::metadata_to_tree_items;
+use crate::layout::{data_table::DataTable, sidebar::SideBar};
 use crate::{
     database::{
         connector::{ConnectionDetails, DatabaseType, get_connection_details},
         detector::get_installed_databases,
-        fetch::get_tables,
+        fetch::fetch_all_table_metadata,
         pool::pool,
     },
     layout::query_editor::QueryEditor,
@@ -19,6 +20,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
 };
 use std::{io::stdout, time::Duration};
+use tui_tree_widget::TreeItem;
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum Focus {
@@ -43,7 +45,7 @@ pub struct App {
     pub exit: bool,
     pub data_table: DataTable,
     pub query_editor: QueryEditor,
-    pub sidebar: Sidebar,
+    pub sidebar: SideBar,
 }
 
 impl App {
@@ -54,7 +56,7 @@ impl App {
             exit: false,
             data_table: DataTable::new(vec![], vec![]),
             query_editor: QueryEditor::new(),
-            sidebar: Sidebar::new(vec![], Focus::Sidebar),
+            sidebar: SideBar::new(vec![], Focus::Sidebar),
         }
     }
 
@@ -95,16 +97,18 @@ impl App {
     async fn setup_and_run_app(&mut self, db_type: DatabaseType) -> Result<()> {
         let details: ConnectionDetails = get_connection_details(db_type)?;
         let pool = pool(db_type, &details).await?;
-        let tables = get_tables(pool).await?;
+        let metadata = fetch_all_table_metadata(&pool).await?;
 
-        if tables.is_empty() {
+        if metadata.is_empty() {
             println!("❌ No tables found in the database.");
             return Ok(());
         }
 
-        println!("✅ Found {} tables", tables.len());
+        println!("✅ Found {} tables", metadata.len());
+        let items = metadata_to_tree_items(&metadata);
 
-        self.setup_ui(tables.table_names());
+        self.setup_ui(items);
+
         stdout().execute(EnableMouseCapture)?;
         let terminal = ratatui::init();
         self.run(terminal)?;
@@ -114,7 +118,7 @@ impl App {
         Ok(())
     }
 
-    fn setup_ui(&mut self, sidebar_items: Vec<String>) {
+    fn setup_ui(&mut self, sidebar_items: Vec<TreeItem<'static, String>>) {
         self.focus = Focus::Sidebar;
         self.query = String::new();
         self.sidebar.update_items(sidebar_items);
@@ -151,7 +155,7 @@ impl App {
                         key => match self.focus {
                             Focus::Editor => self.handle_query_editor_keys(key),
                             Focus::Table => self.handle_data_table_keys(key),
-                            _ => {}
+                            Focus::Sidebar => self.handle_sidebar_keys(key),
                         },
                     }
                 }
@@ -182,13 +186,31 @@ impl App {
         }
     }
 
+    fn handle_sidebar_keys(&mut self, key: KeyCode) {
+        use KeyCode::*;
+
+        match key {
+            Char('\n' | ' ') => self.sidebar.state.toggle_selected(),
+            Left => self.sidebar.state.key_left(),
+            Right => self.sidebar.state.key_right(),
+            Down => self.sidebar.state.key_down(),
+            Up => self.sidebar.state.key_up(),
+            Esc => self.sidebar.state.select(Vec::new()),
+            Home => self.sidebar.state.select_first(),
+            End => self.sidebar.state.select_last(),
+            PageDown => self.sidebar.state.scroll_down(3),
+            PageUp => self.sidebar.state.scroll_up(3),
+            _ => false,
+        };
+    }
+
     fn render_ui(&mut self, f: &mut Frame) {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
             .split(f.area());
 
-        f.render_widget(self.sidebar.render(), layout[0]);
+        self.sidebar.render(f, layout[0]);
 
         let right = Layout::default()
             .direction(Direction::Vertical)
