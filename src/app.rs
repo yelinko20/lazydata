@@ -150,6 +150,9 @@ impl App {
                             self.exit = true;
                         }
                         KeyCode::Tab => {
+                            if self.focus == Focus::Editor {
+                                self.query_editor.stop_editing();
+                            }
                             self.toggle_focus();
                         }
                         key => match self.focus {
@@ -166,12 +169,18 @@ impl App {
 
     fn handle_query_editor_keys(&mut self, key: KeyCode) {
         use KeyCode::*;
-        match key {
-            Char(c) => self.query_editor.enter_char(c),
-            Backspace => self.query_editor.delete_char(),
-            Left => self.query_editor.move_cursor_left(),
-            Right => self.query_editor.move_cursor_right(),
-            _ => {}
+        if self.query_editor.is_editing() {
+            match key {
+                Char(c) => self.query_editor.enter_char(c),
+                Backspace => self.query_editor.delete_char(),
+                Left => self.query_editor.move_cursor_left(),
+                Right => self.query_editor.move_cursor_right(),
+                Enter => self.query_editor.submit_query(),
+                Esc => self.query_editor.stop_editing(),
+                _ => {}
+            }
+        } else if let Char('e') = key {
+            self.query_editor.start_editing()
         }
     }
 

@@ -12,9 +12,16 @@ use crate::{
     style::{DefaultStyle, StyleProvider},
 };
 
+pub enum InputMode {
+    Normal,
+    Editing,
+}
+
 pub struct QueryEditor {
     input: String,
     character_index: usize,
+    quries: Vec<String>,
+    input_mode: InputMode,
 }
 
 impl QueryEditor {
@@ -22,13 +29,33 @@ impl QueryEditor {
         Self {
             input: String::new(),
             character_index: 0,
+            quries: Vec::new(),
+            input_mode: InputMode::Normal,
         }
+    }
+
+    pub fn start_editing(&mut self) {
+        self.input_mode = InputMode::Editing;
+    }
+
+    pub fn stop_editing(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn is_editing(&self) -> bool {
+        matches!(self.input_mode, InputMode::Editing)
     }
 
     pub fn enter_char(&mut self, new_char: char) {
         let index = self.byte_index();
         self.input.insert(index, new_char);
         self.move_cursor_right();
+    }
+
+    pub fn submit_query(&mut self) {
+        self.quries.push(self.input.clone());
+        self.input.clear();
+        self.reset_cursor();
     }
 
     pub fn delete_char(&mut self) {
@@ -42,6 +69,10 @@ impl QueryEditor {
             self.input = before.chain(after).collect();
             self.move_cursor_left();
         }
+    }
+
+    fn reset_cursor(&mut self) {
+        self.character_index = 0;
     }
 
     pub fn move_cursor_left(&mut self) {
@@ -102,6 +133,11 @@ impl QueryEditor {
 
         x += current_line_width;
 
-        frame.set_cursor_position((area.x + 1 + x, area.y + 1 + y));
+        match self.input_mode {
+            InputMode::Editing => {
+                frame.set_cursor_position((area.x + 1 + x, area.y + 1 + y));
+            }
+            InputMode::Normal => {}
+        }
     }
 }
