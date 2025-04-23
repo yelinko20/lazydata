@@ -11,16 +11,26 @@ use crate::{
     layout::query_editor::QueryEditor,
 };
 use color_eyre::eyre::Result;
+use crossterm::execute;
 use crossterm::{
-    ExecutableCommand,
+    ExecutableCommand, cursor,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    style::Print,
+    terminal::{Clear, ClearType},
 };
 use inquire::Select;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
 };
+use std::io::Write;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::{io::stdout, time::Duration};
+use tokio::task::JoinHandle;
+use tokio::time::sleep;
 use tui_textarea::Input;
 use tui_tree_widget::TreeItem;
 
@@ -101,7 +111,13 @@ impl App {
     async fn setup_and_run_app(&mut self, db_type: DatabaseType) -> Result<()> {
         let details: ConnectionDetails = get_connection_details(db_type)?;
         let pool = pool(db_type, &details).await?;
+
+        let (spinner_handle, loading) = self.loading().await;
+
         let metadata = fetch_all_table_metadata(&pool).await?;
+
+        loading.store(false, Ordering::SeqCst);
+        spinner_handle.await.unwrap();
 
         if metadata.is_empty() {
             println!("❌ No tables found in the database.");
@@ -110,7 +126,6 @@ impl App {
 
         println!("✅ Found {} tables", metadata.len());
         let items = metadata_to_tree_items(&metadata);
-
         self.setup_ui(items);
 
         stdout().execute(EnableMouseCapture)?;
@@ -120,6 +135,39 @@ impl App {
         stdout().execute(DisableMouseCapture)?;
 
         Ok(())
+    }
+
+    pub async fn loading(&mut self) -> (JoinHandle<()>, Arc<AtomicBool>) {
+        let loading = Arc::new(AtomicBool::new(true));
+        let spinner_flag = loading.clone();
+
+        let spinner_handle = tokio::spawn(async move {
+            let spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let mut i = 0;
+            let mut stdout = stdout();
+
+            while spinner_flag.load(Ordering::SeqCst) {
+                let symbol = spinner[i % spinner.len()];
+                execute!(
+                    stdout,
+                    cursor::MoveToColumn(0),
+                    Clear(ClearType::CurrentLine),
+                    Print(format!("🔄 Fetching tables... {}", symbol)),
+                )
+                .unwrap();
+                stdout.flush().unwrap();
+                sleep(Duration::from_millis(100)).await;
+                i += 1;
+            }
+
+            execute!(
+                stdout,
+                cursor::MoveToColumn(0),
+                Clear(ClearType::CurrentLine),
+            )
+            .unwrap();
+        });
+        (spinner_handle, loading)
     }
 
     fn setup_ui(&mut self, sidebar_items: Vec<TreeItem<'static, String>>) {
