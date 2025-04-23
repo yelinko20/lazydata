@@ -1,4 +1,5 @@
 use crate::database::fetch::metadata_to_tree_items;
+use crate::layout::query_editor::{Mode, Transition};
 use crate::layout::{data_table::DataTable, sidebar::SideBar};
 use crate::{
     database::{
@@ -20,6 +21,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
 };
 use std::{io::stdout, time::Duration};
+use tui_textarea::Input;
 use tui_tree_widget::TreeItem;
 
 #[derive(PartialEq, Debug, Clone)]
@@ -46,6 +48,7 @@ pub struct App {
     pub data_table: DataTable,
     pub query_editor: QueryEditor,
     pub sidebar: SideBar,
+    // pub textarea: TextArea<'static>,
 }
 
 impl App {
@@ -55,8 +58,9 @@ impl App {
             query: String::new(),
             exit: false,
             data_table: DataTable::new(vec![], vec![]),
-            query_editor: QueryEditor::new(),
+            query_editor: QueryEditor::new(Mode::Normal),
             sidebar: SideBar::new(vec![], Focus::Sidebar),
+            // textarea: TextArea::default(),
         }
     }
 
@@ -150,38 +154,27 @@ impl App {
                             self.exit = true;
                         }
                         KeyCode::Tab => {
-                            if self.focus == Focus::Editor {
-                                self.query_editor.stop_editing();
-                            }
                             self.toggle_focus();
                         }
-                        key => match self.focus {
-                            Focus::Editor => self.handle_query_editor_keys(key),
-                            Focus::Table => self.handle_data_table_keys(key),
-                            Focus::Sidebar => self.handle_sidebar_keys(key),
+                        _ => match self.focus {
+                            Focus::Editor => {
+                                let input = Input::from(key_event);
+                                match self.query_editor.handle_keys(input) {
+                                    Transition::Nop => {}
+                                    Transition::Mode(mode) => self.query_editor.mode = mode,
+                                    Transition::Pending(pending) => {
+                                        self.query_editor.pending = pending
+                                    }
+                                }
+                            }
+                            Focus::Table => self.handle_data_table_keys(key_event.code),
+                            Focus::Sidebar => self.handle_sidebar_keys(key_event.code),
                         },
                     }
                 }
             }
         }
         Ok(())
-    }
-
-    fn handle_query_editor_keys(&mut self, key: KeyCode) {
-        use KeyCode::*;
-        if self.query_editor.is_editing() {
-            match key {
-                Char(c) => self.query_editor.enter_char(c),
-                Backspace => self.query_editor.delete_char(),
-                Left => self.query_editor.move_cursor_left(),
-                Right => self.query_editor.move_cursor_right(),
-                Enter => self.query_editor.submit_query(),
-                Esc => self.query_editor.stop_editing(),
-                _ => {}
-            }
-        } else if let Char('e') = key {
-            self.query_editor.start_editing()
-        }
     }
 
     fn handle_data_table_keys(&mut self, key: KeyCode) {
@@ -225,8 +218,8 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(layout[1]);
-
         self.query_editor.draw(f, right[0], self.focus.clone());
+
         self.data_table.draw(f, right[1]);
     }
 

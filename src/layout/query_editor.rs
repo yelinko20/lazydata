@@ -1,143 +1,392 @@
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Color, Style},
-    text::Text,
-    widgets::{Block, Borders, Paragraph, Wrap},
-};
-use unicode_width::UnicodeWidthChar;
+use color_eyre::eyre::Result;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Block, Borders};
+use std::fmt;
+use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
 
-use crate::{
-    app::Focus,
-    style::{DefaultStyle, StyleProvider},
-};
+use crate::app::Focus;
+use crate::style::{DefaultStyle, StyleProvider};
 
-pub enum InputMode {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
     Normal,
-    Editing,
+    Insert,
+    Visual,
+    Operator(char),
+}
+
+impl Mode {
+    fn block<'a>(&self, current_focus: &Focus) -> Block<'a> {
+        let style = DefaultStyle {
+            focus: current_focus.clone(),
+        };
+        let help = match self {
+            Self::Normal => "type i to enter insert mode",
+            Self::Insert => "type Esc to back to normal mode",
+            Self::Visual => "type y to yank, type d to delete, type Esc to back to normal mode",
+            Self::Operator(_) => "move cursor to apply operator",
+        };
+        let title = format!("{} MODE ({})", self, help);
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(style.border_style(Focus::Editor))
+            .style(style.block_style())
+    }
+
+    fn cursor_style(&self) -> Style {
+        let color = match self {
+            Self::Normal => Color::Reset,
+            Self::Insert => Color::LightBlue,
+            Self::Visual => Color::LightYellow,
+            Self::Operator(_) => Color::LightGreen,
+        };
+        Style::default().fg(color).add_modifier(Modifier::REVERSED)
+    }
+}
+
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            Self::Normal => write!(f, "NORMAL"),
+            Self::Insert => write!(f, "INSERT"),
+            Self::Visual => write!(f, "VISUAL"),
+            Self::Operator(c) => write!(f, "OPERATOR({})", c),
+        }
+    }
+}
+
+pub enum Transition {
+    Nop,
+    Mode(Mode),
+    Pending(Input),
 }
 
 pub struct QueryEditor {
-    input: String,
-    character_index: usize,
-    quries: Vec<String>,
-    input_mode: InputMode,
+    pub mode: Mode,
+    pub pending: Input,
+    pub textarea: TextArea<'static>,
 }
 
 impl QueryEditor {
-    pub fn new() -> Self {
+    pub fn new(mode: Mode) -> Self {
         Self {
-            input: String::new(),
-            character_index: 0,
-            quries: Vec::new(),
-            input_mode: InputMode::Normal,
+            mode,
+            pending: Input::default(),
+            textarea: TextArea::default(),
         }
     }
 
-    pub fn start_editing(&mut self) {
-        self.input_mode = InputMode::Editing;
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, current_focus: Focus) {
+        self.textarea.set_block(self.mode.block(&current_focus));
+        self.textarea.set_cursor_style(self.mode.cursor_style());
+        frame.render_widget(&self.textarea, area);
     }
 
-    pub fn stop_editing(&mut self) {
-        self.input_mode = InputMode::Normal;
-    }
-
-    pub fn is_editing(&self) -> bool {
-        matches!(self.input_mode, InputMode::Editing)
-    }
-
-    pub fn enter_char(&mut self, new_char: char) {
-        let index = self.byte_index();
-        self.input.insert(index, new_char);
-        self.move_cursor_right();
-    }
-
-    pub fn submit_query(&mut self) {
-        self.quries.push(self.input.clone());
-        self.input.clear();
-        self.reset_cursor();
-    }
-
-    pub fn delete_char(&mut self) {
-        if self.character_index != 0 {
-            let current_index = self.character_index;
-            let from_left_to_current_index = current_index - 1;
-
-            let before = self.input.chars().take(from_left_to_current_index);
-            let after = self.input.chars().skip(current_index);
-
-            self.input = before.chain(after).collect();
-            self.move_cursor_left();
+    pub fn handle_keys(&mut self, input: Input) -> Transition {
+        if input.key == Key::Null {
+            return Transition::Nop;
         }
-    }
 
-    fn reset_cursor(&mut self) {
-        self.character_index = 0;
-    }
+        match self.mode {
+            Mode::Normal | Mode::Visual | Mode::Operator(_) => {
+                match input {
+                    Input {
+                        key: Key::Char('h'),
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::Back),
+                    Input {
+                        key: Key::Char('j'),
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::Down),
+                    Input {
+                        key: Key::Char('k'),
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::Up),
+                    Input {
+                        key: Key::Char('l'),
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::Forward),
+                    Input {
+                        key: Key::Char('w'),
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::WordForward),
+                    Input {
+                        key: Key::Char('e'),
+                        ctrl: false,
+                        ..
+                    } => {
+                        self.textarea.move_cursor(CursorMove::WordEnd);
+                        if matches!(self.mode, Mode::Operator(_)) {
+                            self.textarea.move_cursor(CursorMove::Forward);
+                        }
+                    }
+                    Input {
+                        key: Key::Char('b'),
+                        ctrl: false,
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::WordBack),
+                    Input {
+                        key: Key::Char('^'),
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::Head),
+                    Input {
+                        key: Key::Char('$'),
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::End),
+                    Input {
+                        key: Key::Char('D'),
+                        ..
+                    } => {
+                        self.textarea.delete_line_by_end();
+                        return Transition::Mode(Mode::Normal);
+                    }
+                    Input {
+                        key: Key::Char('C'),
+                        ..
+                    } => {
+                        self.textarea.delete_line_by_end();
+                        self.textarea.cancel_selection();
+                        return Transition::Mode(Mode::Insert);
+                    }
+                    Input {
+                        key: Key::Char('p'),
+                        ..
+                    } => {
+                        self.textarea.paste();
+                        return Transition::Mode(Mode::Normal);
+                    }
+                    Input {
+                        key: Key::Char('u'),
+                        ctrl: false,
+                        ..
+                    } => {
+                        self.textarea.undo();
+                        return Transition::Mode(Mode::Normal);
+                    }
+                    Input {
+                        key: Key::Char('r'),
+                        ctrl: true,
+                        ..
+                    } => {
+                        self.textarea.redo();
+                        return Transition::Mode(Mode::Normal);
+                    }
+                    Input {
+                        key: Key::Char('x'),
+                        ..
+                    } => {
+                        self.textarea.delete_next_char();
+                        return Transition::Mode(Mode::Normal);
+                    }
+                    Input {
+                        key: Key::Char('i'),
+                        ..
+                    } => {
+                        self.textarea.cancel_selection();
+                        return Transition::Mode(Mode::Insert);
+                    }
+                    Input {
+                        key: Key::Char('a'),
+                        ..
+                    } => {
+                        self.textarea.cancel_selection();
+                        self.textarea.move_cursor(CursorMove::Forward);
+                        return Transition::Mode(Mode::Insert);
+                    }
+                    Input {
+                        key: Key::Char('A'),
+                        ..
+                    } => {
+                        self.textarea.cancel_selection();
+                        self.textarea.move_cursor(CursorMove::End);
+                        return Transition::Mode(Mode::Insert);
+                    }
+                    Input {
+                        key: Key::Char('o'),
+                        ..
+                    } => {
+                        self.textarea.move_cursor(CursorMove::End);
+                        self.textarea.insert_newline();
+                        return Transition::Mode(Mode::Insert);
+                    }
+                    Input {
+                        key: Key::Char('O'),
+                        ..
+                    } => {
+                        self.textarea.move_cursor(CursorMove::Head);
+                        self.textarea.insert_newline();
+                        self.textarea.move_cursor(CursorMove::Up);
+                        return Transition::Mode(Mode::Insert);
+                    }
+                    Input {
+                        key: Key::Char('I'),
+                        ..
+                    } => {
+                        self.textarea.cancel_selection();
+                        self.textarea.move_cursor(CursorMove::Head);
+                        return Transition::Mode(Mode::Insert);
+                    }
+                    Input {
+                        key: Key::Char('e'),
+                        ctrl: true,
+                        ..
+                    } => self.textarea.scroll((1, 0)),
+                    Input {
+                        key: Key::Char('y'),
+                        ctrl: true,
+                        ..
+                    } => self.textarea.scroll((-1, 0)),
+                    Input {
+                        key: Key::Char('d'),
+                        ctrl: true,
+                        ..
+                    } => self.textarea.scroll(Scrolling::HalfPageDown),
+                    Input {
+                        key: Key::Char('u'),
+                        ctrl: true,
+                        ..
+                    } => self.textarea.scroll(Scrolling::HalfPageUp),
+                    Input {
+                        key: Key::Char('f'),
+                        ctrl: true,
+                        ..
+                    } => self.textarea.scroll(Scrolling::PageDown),
+                    Input {
+                        key: Key::Char('b'),
+                        ctrl: true,
+                        ..
+                    } => self.textarea.scroll(Scrolling::PageUp),
+                    Input {
+                        key: Key::Char('v'),
+                        ctrl: false,
+                        ..
+                    } if self.mode == Mode::Normal => {
+                        self.textarea.start_selection();
+                        return Transition::Mode(Mode::Visual);
+                    }
+                    Input {
+                        key: Key::Char('V'),
+                        ctrl: false,
+                        ..
+                    } if self.mode == Mode::Normal => {
+                        self.textarea.move_cursor(CursorMove::Head);
+                        self.textarea.start_selection();
+                        self.textarea.move_cursor(CursorMove::End);
+                        return Transition::Mode(Mode::Visual);
+                    }
+                    Input { key: Key::Esc, .. }
+                    | Input {
+                        key: Key::Char('v'),
+                        ctrl: false,
+                        ..
+                    } if self.mode == Mode::Visual => {
+                        self.textarea.cancel_selection();
+                        return Transition::Mode(Mode::Normal);
+                    }
+                    Input {
+                        key: Key::Char('g'),
+                        ctrl: false,
+                        ..
+                    } if matches!(
+                        self.pending,
+                        Input {
+                            key: Key::Char('g'),
+                            ctrl: false,
+                            ..
+                        }
+                    ) =>
+                    {
+                        self.textarea.move_cursor(CursorMove::Top)
+                    }
+                    Input {
+                        key: Key::Char('G'),
+                        ctrl: false,
+                        ..
+                    } => self.textarea.move_cursor(CursorMove::Bottom),
+                    Input {
+                        key: Key::Char(c),
+                        ctrl: false,
+                        ..
+                    } if self.mode == Mode::Operator(c) => {
+                        // Handle yy, dd, cc. (This is not strictly the same behavior as Vim)
+                        self.textarea.move_cursor(CursorMove::Head);
+                        self.textarea.start_selection();
+                        let cursor = self.textarea.cursor();
+                        self.textarea.move_cursor(CursorMove::Down);
+                        if cursor == self.textarea.cursor() {
+                            self.textarea.move_cursor(CursorMove::End); // At the last line, move to end of the line instead
+                        }
+                    }
+                    Input {
+                        key: Key::Char(op @ ('y' | 'd' | 'c')),
+                        ctrl: false,
+                        ..
+                    } if self.mode == Mode::Normal => {
+                        self.textarea.start_selection();
+                        return Transition::Mode(Mode::Operator(op));
+                    }
+                    Input {
+                        key: Key::Char('y'),
+                        ctrl: false,
+                        ..
+                    } if self.mode == Mode::Visual => {
+                        self.textarea.move_cursor(CursorMove::Forward); // Vim's text selection is inclusive
+                        self.textarea.copy();
+                        return Transition::Mode(Mode::Normal);
+                    }
+                    Input {
+                        key: Key::Char('d'),
+                        ctrl: false,
+                        ..
+                    } if self.mode == Mode::Visual => {
+                        self.textarea.move_cursor(CursorMove::Forward); // Vim's text selection is inclusive
+                        self.textarea.cut();
+                        return Transition::Mode(Mode::Normal);
+                    }
+                    Input {
+                        key: Key::Char('c'),
+                        ctrl: false,
+                        ..
+                    } if self.mode == Mode::Visual => {
+                        self.textarea.move_cursor(CursorMove::Forward); // Vim's text selection is inclusive
+                        self.textarea.cut();
+                        return Transition::Mode(Mode::Insert);
+                    }
+                    input => return Transition::Pending(input),
+                }
 
-    pub fn move_cursor_left(&mut self) {
-        let cursor_moved_left = self.character_index.saturating_sub(1);
-        self.character_index = self.clamp_cursor(cursor_moved_left);
-    }
-
-    pub fn move_cursor_right(&mut self) {
-        let cursor_moved_right = self.character_index.saturating_add(1);
-        self.character_index = self.clamp_cursor(cursor_moved_right);
-    }
-
-    fn byte_index(&self) -> usize {
-        self.input
-            .char_indices()
-            .map(|(i, _)| i)
-            .nth(self.character_index)
-            .unwrap_or(self.input.len())
-    }
-
-    fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {
-        new_cursor_pos.clamp(0, self.input.chars().count())
-    }
-
-    pub fn draw(&self, frame: &mut Frame, area: Rect, current_focus: Focus) {
-        let style = DefaultStyle {
-            focus: current_focus,
-        };
-        let block = Block::default()
-            .title("Query Editor")
-            .borders(Borders::ALL)
-            .border_style(style.border_style(Focus::Editor))
-            .style(style.block_style());
-
-        let text = Text::from(self.input.clone())
-            .patch_style(Style::default().fg(style.text_style().fg.unwrap_or(Color::Reset)));
-        let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
-
-        frame.render_widget(paragraph, area);
-
-        let max_width = area.width.saturating_sub(2);
-        let input_up_to_cursor = self.input.chars().take(self.character_index);
-
-        let mut x = 0;
-        let mut y = 0;
-        let mut current_line_width = 0;
-
-        for ch in input_up_to_cursor {
-            let ch_width = ch.width().unwrap_or(0) as u16;
-
-            if current_line_width + ch_width > max_width {
-                y += 1;
-                current_line_width = 0;
+                // Handle the pending operator
+                match self.mode {
+                    Mode::Operator('y') => {
+                        self.textarea.copy();
+                        Transition::Mode(Mode::Normal)
+                    }
+                    Mode::Operator('d') => {
+                        self.textarea.cut();
+                        Transition::Mode(Mode::Normal)
+                    }
+                    Mode::Operator('c') => {
+                        self.textarea.cut();
+                        Transition::Mode(Mode::Insert)
+                    }
+                    _ => Transition::Nop,
+                }
             }
-
-            current_line_width += ch_width;
-        }
-
-        x += current_line_width;
-
-        match self.input_mode {
-            InputMode::Editing => {
-                frame.set_cursor_position((area.x + 1 + x, area.y + 1 + y));
-            }
-            InputMode::Normal => {}
+            Mode::Insert => match input {
+                Input { key: Key::Esc, .. }
+                | Input {
+                    key: Key::Char('c'),
+                    ctrl: true,
+                    ..
+                } => Transition::Mode(Mode::Normal),
+                input => {
+                    self.textarea.input(input);
+                    Transition::Mode(Mode::Insert)
+                }
+            },
         }
     }
 }

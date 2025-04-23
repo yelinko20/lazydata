@@ -5,7 +5,6 @@ use crate::app::Focus;
 pub trait StyleProvider {
     fn border_style(&self, current: Focus) -> Style;
     fn block_style(&self) -> Style;
-    fn text_style(&self) -> Style;
     fn highlight_style(&self) -> Style;
 }
 
@@ -26,10 +25,6 @@ impl StyleProvider for DefaultStyle {
 
     fn block_style(&self) -> Style {
         Style::default().bg(Color::Rgb(30, 30, 46))
-    }
-
-    fn text_style(&self) -> Style {
-        Style::default().fg(Color::Rgb(205, 214, 244))
     }
 
     fn highlight_style(&self) -> Style {
@@ -66,15 +61,6 @@ mod tests {
         };
         let result = style.block_style();
         assert_eq!(result, Style::default().bg(Color::Rgb(30, 30, 46)))
-    }
-
-    #[test]
-    fn test_text_style() {
-        let style = DefaultStyle {
-            focus: Focus::Sidebar,
-        };
-        let result = style.text_style();
-        assert_eq!(result, Style::default().fg(Color::Rgb(205, 214, 244)))
     }
 
     #[test]

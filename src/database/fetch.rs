@@ -1,8 +1,10 @@
 use super::pool::DbPool;
 use color_eyre::eyre::Result;
+use futures::future::try_join_all;
 use ratatui::text::Text;
 use sqlx::{MySqlPool, PgPool, Row, SqlitePool};
 use tui_tree_widget::TreeItem;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TableMetadata {
@@ -34,10 +36,12 @@ impl TableMetadataUtils for Vec<TableMetadata> {
     }
 }
 
-pub trait MetadataFetcher {
+#[async_trait::async_trait]
+pub trait MetadataFetcher: Send + Sync {
     async fn fetch_metadata(&self) -> Result<Vec<TableMetadata>>;
 }
 
+#[async_trait::async_trait]
 impl MetadataFetcher for PgPool {
     async fn fetch_metadata(&self) -> Result<Vec<TableMetadata>> {
         let rows = sqlx::query(
@@ -65,38 +69,42 @@ impl MetadataFetcher for PgPool {
         .fetch_all(self)
         .await?;
 
-        let mut tables = Vec::new();
+        let table_futures = rows.into_iter().map(|row| {
+            let pool = self.clone();
+            async move {
+                let table_name: String = row.get("table_name");
+                let row_count: i64 = row.get("row_estimate");
+                let estimated_size: String = row.get("total_size");
+                let table_type: String = row.get("table_type");
 
-        for row in rows {
-            let table_name: String = row.get("table_name");
-            let row_count: i64 = row.get("row_estimate");
-            let estimated_size: String = row.get("total_size");
-            let table_type: String = row.get("table_type");
+                let columns = get_pg_columns(&pool, &table_name).await?;
+                let constraints = get_pg_constraints(&pool, &table_name).await?;
+                let indexes = get_pg_indexes(&pool, &table_name).await?;
+                let rls_policies = get_pg_rls_policies(&pool, &table_name).await?;
+                let rules = get_pg_rules(&pool, &table_name).await?;
+                let triggers = get_pg_triggers(&pool, &table_name).await?;
 
-            let columns = get_pg_columns(self, &table_name).await?;
-            let constraints = get_pg_constraints(self, &table_name).await?;
-            let indexes = get_pg_indexes(self, &table_name).await?;
-            let rls_policies = get_pg_rls_policies(self, &table_name).await?;
-            let rules = get_pg_rules(self, &table_name).await?;
-            let triggers = get_pg_triggers(self, &table_name).await?;
+                Ok::<_, sqlx::Error>(TableMetadata {
+                    name: table_name,
+                    columns,
+                    constraints,
+                    indexes,
+                    rls_policies,
+                    rules,
+                    triggers,
+                    row_count,
+                    estimated_size,
+                    table_type,
+                })
+            }
+        });
 
-            tables.push(TableMetadata {
-                name: table_name,
-                columns,
-                constraints,
-                indexes,
-                rls_policies,
-                rules,
-                triggers,
-                row_count,
-                estimated_size,
-                table_type,
-            });
-        }
-        Ok(tables)
+        let metadata = try_join_all(table_futures).await?;
+        Ok(metadata)
     }
 }
 
+#[async_trait::async_trait]
 impl MetadataFetcher for MySqlPool {
     async fn fetch_metadata(&self) -> Result<Vec<TableMetadata>> {
         let rows = sqlx::query("SHOW TABLE STATUS").fetch_all(self).await?;
@@ -144,6 +152,7 @@ impl MetadataFetcher for MySqlPool {
     }
 }
 
+#[async_trait::async_trait]
 impl MetadataFetcher for SqlitePool {
     async fn fetch_metadata(&self) -> Result<Vec<TableMetadata>> {
         let rows = sqlx::query("SELECT name FROM sqlite_master WHERE type='table'")
@@ -204,7 +213,7 @@ pub async fn fetch_all_table_metadata(pool: &DbPool) -> Result<Vec<TableMetadata
     Ok(metadata)
 }
 
-async fn get_pg_columns(pool: &PgPool, table: &str) -> Result<Vec<String>> {
+async fn get_pg_columns(pool: &PgPool, table: &str) -> sqlx::Result<Vec<String>> {
     let rows = sqlx::query("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1")
         .bind(table)
         .fetch_all(pool)
@@ -212,7 +221,7 @@ async fn get_pg_columns(pool: &PgPool, table: &str) -> Result<Vec<String>> {
     Ok(rows.into_iter().map(|r| r.get("column_name")).collect())
 }
 
-async fn get_pg_constraints(pool: &PgPool, table: &str) -> Result<Vec<String>> {
+async fn get_pg_constraints(pool: &PgPool, table: &str) -> sqlx::Result<Vec<String>> {
     let rows = sqlx::query(
         "SELECT constraint_name FROM information_schema.table_constraints WHERE table_name = $1 AND constraint_type != 'CHECK'",
     )
@@ -222,7 +231,7 @@ async fn get_pg_constraints(pool: &PgPool, table: &str) -> Result<Vec<String>> {
     Ok(rows.into_iter().map(|r| r.get("constraint_name")).collect())
 }
 
-async fn get_pg_indexes(pool: &PgPool, table: &str) -> Result<Vec<String>> {
+async fn get_pg_indexes(pool: &PgPool, table: &str) -> sqlx::Result<Vec<String>> {
     let rows = sqlx::query("SELECT indexname FROM pg_indexes WHERE tablename = $1")
         .bind(table)
         .fetch_all(pool)
@@ -230,7 +239,7 @@ async fn get_pg_indexes(pool: &PgPool, table: &str) -> Result<Vec<String>> {
     Ok(rows.into_iter().map(|r| r.get("indexname")).collect())
 }
 
-async fn get_pg_rls_policies(pool: &PgPool, table: &str) -> Result<Vec<String>> {
+async fn get_pg_rls_policies(pool: &PgPool, table: &str) -> sqlx::Result<Vec<String>> {
     let rows = sqlx::query("SELECT policyname FROM pg_policies WHERE tablename = $1")
         .bind(table)
         .fetch_all(pool)
@@ -238,7 +247,7 @@ async fn get_pg_rls_policies(pool: &PgPool, table: &str) -> Result<Vec<String>> 
     Ok(rows.into_iter().map(|r| r.get("policyname")).collect())
 }
 
-async fn get_pg_rules(pool: &PgPool, table: &str) -> Result<Vec<String>> {
+async fn get_pg_rules(pool: &PgPool, table: &str) -> sqlx::Result<Vec<String>> {
     let rows = sqlx::query("SELECT rulename FROM pg_rules WHERE tablename = $1")
         .bind(table)
         .fetch_all(pool)
@@ -246,7 +255,7 @@ async fn get_pg_rules(pool: &PgPool, table: &str) -> Result<Vec<String>> {
     Ok(rows.into_iter().map(|r| r.get("rulename")).collect())
 }
 
-async fn get_pg_triggers(pool: &PgPool, table: &str) -> Result<Vec<String>> {
+async fn get_pg_triggers(pool: &PgPool, table: &str) -> sqlx::Result<Vec<String>> {
     let rows = sqlx::query("SELECT tgname FROM pg_trigger JOIN pg_class ON tgrelid = pg_class.oid WHERE relname = $1 AND NOT tgisinternal")
         .bind(table)
         .fetch_all(pool)
