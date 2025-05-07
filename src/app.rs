@@ -1,4 +1,5 @@
-use crate::database::fetch::metadata_to_tree_items;
+use crate::database::fetch::{fetch_query, metadata_to_tree_items};
+use crate::database::pool::DbPool;
 use crate::layout::query_editor::{Mode, Transition};
 use crate::layout::{data_table::DataTable, sidebar::SideBar};
 use crate::{
@@ -58,7 +59,7 @@ pub struct App {
     pub data_table: DataTable,
     pub query_editor: QueryEditor,
     pub sidebar: SideBar,
-    // pub textarea: TextArea<'static>,
+    pub pool: Option<DbPool>,
 }
 
 impl App {
@@ -70,7 +71,7 @@ impl App {
             data_table: DataTable::new(vec![], vec![]),
             query_editor: QueryEditor::new(Mode::Normal),
             sidebar: SideBar::new(vec![], Focus::Sidebar),
-            // textarea: TextArea::default(),
+            pool: None,
         }
     }
 
@@ -108,9 +109,15 @@ impl App {
         }
     }
 
+    fn current_query(&self) -> String {
+        self.query_editor.textarea.lines().join("\n")
+    }
+
     async fn setup_and_run_app(&mut self, db_type: DatabaseType) -> Result<()> {
         let details: ConnectionDetails = get_connection_details(db_type)?;
         let pool = pool(db_type, &details).await?;
+
+        self.pool = Some(pool.clone());
 
         let (spinner_handle, loading) = self.loading().await;
 
@@ -126,14 +133,13 @@ impl App {
 
         println!("✅ Found {} tables", metadata.len());
         let items = metadata_to_tree_items(&metadata);
-        self.setup_ui(items);
+        self.setup_ui(items, pool).await?;
 
         stdout().execute(EnableMouseCapture)?;
         let terminal = ratatui::init();
-        self.run(terminal)?;
+        let _ = self.run(terminal).await;
         ratatui::restore();
         stdout().execute(DisableMouseCapture)?;
-
         Ok(())
     }
 
@@ -170,30 +176,34 @@ impl App {
         (spinner_handle, loading)
     }
 
-    fn setup_ui(&mut self, sidebar_items: Vec<TreeItem<'static, String>>) {
+    async fn setup_ui(
+        &mut self,
+        sidebar_items: Vec<TreeItem<'static, String>>,
+        pool: DbPool,
+    ) -> Result<()> {
         self.focus = Focus::Sidebar;
-        self.query = String::new();
         self.sidebar.update_items(sidebar_items);
         self.sidebar.update_focus(Focus::Sidebar);
 
-        self.data_table = DataTable::new(
-            vec!["ID".into(), "Name".into(), "Value".into()],
-            vec![
-                vec!["1".into(), "Item A".into(), "100".into()],
-                vec!["2".into(), "Item B".into(), "200".into()],
-            ],
-        );
+        let query = self.current_query();
+        if !query.is_empty() {
+            if let Ok(result) = fetch_query(&pool, &query).await {
+                self.data_table = DataTable::new(result.headers, result.rows);
+            }
+        }
+
+        Ok(())
     }
 
-    pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
+    pub async fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
         while !self.exit {
             terminal.draw(|f| self.render_ui(f))?;
-            self.handle_events()?;
+            let _ = self.handle_events().await;
         }
         Ok(())
     }
 
-    fn handle_events(&mut self) -> Result<()> {
+    async fn handle_events(&mut self) -> Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key_event) = event::read()? {
                 if key_event.kind == KeyEventKind::Press {
@@ -203,6 +213,24 @@ impl App {
                         }
                         KeyCode::Tab => {
                             self.toggle_focus();
+                        }
+                        KeyCode::Enter => {
+                            let query = self.current_query();
+                            if !query.is_empty() {
+                                self.query = query.clone();
+
+                                if let Some(pool) = &self.pool {
+                                    match fetch_query(pool, &query).await {
+                                        Ok(result) => {
+                                            self.data_table =
+                                                DataTable::new(result.headers, result.rows);
+                                        }
+                                        Err(e) => {
+                                            println!("Query error: {:?}", e);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         _ => match self.focus {
                             Focus::Editor => {
@@ -224,7 +252,6 @@ impl App {
         }
         Ok(())
     }
-
     fn handle_data_table_keys(&mut self, key: KeyCode) {
         use KeyCode::*;
         match key {
@@ -238,7 +265,6 @@ impl App {
 
     fn handle_sidebar_keys(&mut self, key: KeyCode) {
         use KeyCode::*;
-
         match key {
             Char('\n' | ' ') => self.sidebar.state.toggle_selected(),
             Left => self.sidebar.state.key_left(),

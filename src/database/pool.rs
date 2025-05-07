@@ -2,7 +2,7 @@ use sqlx::{mysql::MySqlPool, postgres::PgPool, sqlite::SqlitePool};
 
 use super::connector::{ConnectionDetails, DatabaseType};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DbPool {
     Postgres(PgPool),
     MySQL(MySqlPool),

@@ -45,10 +45,11 @@ impl TableColors {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct DynamicData {
-    headers: Vec<String>,
-    rows: Vec<Vec<String>>,
-    column_widths: Vec<u16>,
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub column_widths: Vec<u16>,
 }
 
 impl DynamicData {
