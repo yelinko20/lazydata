@@ -10,7 +10,7 @@ edition = "2024"
 async-trait = "0.1.88"
 color-eyre = "0.6.3"
 colored = "3.0"
-clap = { version = "4.5.36", features = [
+clap = { version = "4.5.38", features = [
     "derive",
     "cargo",
     "wrap_help",
