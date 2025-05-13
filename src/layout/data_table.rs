@@ -69,12 +69,10 @@ impl DynamicData {
     fn calculate_column_widths(headers: &[String], rows: &[Vec<String>]) -> Vec<u16> {
         let mut widths = vec![0; headers.len()];
 
-        // Calculate max width for each column based on headers
         for (i, header) in headers.iter().enumerate() {
             widths[i] = header.width() as u16;
         }
 
-        // Calculate max width for each column based on row data
         for row in rows {
             for (i, cell) in row.iter().enumerate() {
                 if i < widths.len() {
@@ -86,8 +84,8 @@ impl DynamicData {
             }
         }
 
-        // Add some padding
-        widths.iter().map(|&w| w + 2).collect()
+        // Add minimal padding and ensure minimum width
+        widths.iter().map(|&w| std::cmp::max(w + 1, 3)).collect()
     }
 
     pub fn headers(&self) -> &[String] {
@@ -114,7 +112,9 @@ impl DynamicData {
 pub struct DataTable {
     state: TableState,
     data: DynamicData,
-    scroll_state: ScrollbarState,
+    vertical_scroll_state: ScrollbarState,
+    horizontal_scroll_state: ScrollbarState,
+    horizontal_scroll: usize,
     colors: TableColors,
     color_index: usize,
 }
@@ -128,10 +128,16 @@ impl DataTable {
             } else {
                 Some(0)
             }),
-            scroll_state: ScrollbarState::new((data.len().saturating_sub(1)) * ITEM_HEIGHT),
+            vertical_scroll_state: ScrollbarState::new(
+                (data.len().saturating_sub(1)) * ITEM_HEIGHT,
+            ),
+            horizontal_scroll_state: ScrollbarState::new(
+                data.column_widths.len().saturating_add(1),
+            ),
             colors: TableColors::new(&PALETTES[0]),
             color_index: 0,
             data,
+            horizontal_scroll: 0,
         }
     }
 
@@ -139,7 +145,8 @@ impl DataTable {
         self.data = DynamicData::from_query_results(headers, rows);
         self.state
             .select(if self.data.is_empty() { None } else { Some(0) });
-        self.scroll_state = ScrollbarState::new((self.data.len().saturating_sub(1)) * ITEM_HEIGHT);
+        self.vertical_scroll_state =
+            ScrollbarState::new((self.data.len().saturating_sub(1)) * ITEM_HEIGHT);
     }
 
     pub fn next_row(&mut self) {
@@ -153,7 +160,7 @@ impl DataTable {
             None => 0,
         };
         self.state.select(Some(i));
-        self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+        self.vertical_scroll_state = self.vertical_scroll_state.position(i * ITEM_HEIGHT);
     }
 
     pub fn previous_row(&mut self) {
@@ -167,7 +174,7 @@ impl DataTable {
             None => 0,
         };
         self.state.select(Some(i));
-        self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+        self.vertical_scroll_state = self.vertical_scroll_state.position(i * ITEM_HEIGHT);
     }
 
     pub fn next_column(&mut self) {
@@ -176,6 +183,24 @@ impl DataTable {
 
     pub fn previous_column(&mut self) {
         self.state.select_previous_column();
+    }
+
+    pub fn scroll_right(&mut self) {
+        if self.horizontal_scroll < self.data.column_widths.len().saturating_sub(1) {
+            self.horizontal_scroll = self.horizontal_scroll.saturating_add(1);
+            self.horizontal_scroll_state = self
+                .horizontal_scroll_state
+                .position(self.horizontal_scroll);
+        }
+    }
+
+    pub fn scroll_left(&mut self) {
+        if self.horizontal_scroll > 0 {
+            self.horizontal_scroll = self.horizontal_scroll.saturating_sub(1);
+            self.horizontal_scroll_state = self
+                .horizontal_scroll_state
+                .position(self.horizontal_scroll);
+        }
     }
 
     pub fn next_color(&mut self) {
@@ -214,9 +239,56 @@ impl DataTable {
             .add_modifier(Modifier::REVERSED)
             .fg(self.colors.selected_cell_style_fg);
 
-        let header = self
+        // Calculate visible columns based on available width
+        let mut visible_columns = 0;
+        let mut total_width = 0;
+        let available_width = area.width.saturating_sub(1); // Account for scrollbar
+
+        // First pass: calculate how many columns can fit
+        for width in self
+            .data
+            .column_widths()
+            .iter()
+            .skip(self.horizontal_scroll)
+        {
+            if total_width + width > available_width {
+                break;
+            }
+            total_width += width;
+            visible_columns += 1;
+        }
+
+        // Second pass: adjust column widths if needed
+        let mut adjusted_widths = Vec::new();
+        let mut remaining_width = available_width;
+        let columns_to_show = self
+            .data
+            .column_widths()
+            .iter()
+            .skip(self.horizontal_scroll)
+            .take(visible_columns);
+
+        for &width in columns_to_show {
+            if remaining_width >= width {
+                adjusted_widths.push(width);
+                remaining_width -= width;
+            } else {
+                // If we can't fit the full width, use the remaining space
+                adjusted_widths.push(remaining_width);
+                break;
+            }
+        }
+
+        let visible_headers: Vec<_> = self
             .data
             .headers()
+            .iter()
+            .skip(self.horizontal_scroll)
+            .take(visible_columns)
+            .cloned()
+            .collect();
+
+        let header = visible_headers
             .iter()
             .map(|h| Cell::from(h.clone()))
             .collect::<Row>()
@@ -231,6 +303,8 @@ impl DataTable {
             };
             Row::new(
                 row.iter()
+                    .skip(self.horizontal_scroll)
+                    .take(visible_columns)
                     .map(|text| Cell::from(Text::from(format!("\n{text}\n")))),
             )
             .style(Style::new().fg(self.colors.row_fg).bg(color))
@@ -238,9 +312,7 @@ impl DataTable {
         });
 
         let bar = " █ ";
-        let constraints = self
-            .data
-            .column_widths()
+        let constraints = adjusted_widths
             .iter()
             .map(|&w| Constraint::Length(w))
             .collect::<Vec<_>>();
@@ -276,7 +348,20 @@ impl DataTable {
                 vertical: 1,
                 horizontal: 1,
             }),
-            &mut self.scroll_state,
+            &mut self.vertical_scroll_state,
+        );
+
+        frame.render_stateful_widget(
+            Scrollbar::default()
+                .orientation(ScrollbarOrientation::HorizontalBottom)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_symbol("━━━"),
+            area.inner(Margin {
+                horizontal: 1,
+                vertical: 1,
+            }),
+            &mut self.horizontal_scroll_state,
         );
     }
 }

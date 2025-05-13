@@ -94,7 +94,7 @@ impl App {
                 println!("❌ Unsupported database.");
             }
         } else {
-            println!("\n👋 Exited without selection.");
+            println!("\n👋 Bye");
         }
 
         Ok(())
@@ -257,8 +257,10 @@ impl App {
         match key {
             Char('j') | Down => self.data_table.next_row(),
             Char('k') | Up => self.data_table.previous_row(),
-            Char('l') | Right => self.data_table.next_column(),
-            Char('h') | Left => self.data_table.previous_column(),
+            Char('l') => self.data_table.next_column(),
+            Char('h') => self.data_table.previous_column(),
+            Char('x') | Right => self.data_table.scroll_right(),
+            Char('X') | Left => self.data_table.scroll_left(),
             _ => {}
         }
     }
