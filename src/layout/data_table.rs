@@ -4,9 +4,13 @@ use ratatui::style::palette::tailwind;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::Text;
 use ratatui::widgets::{
-    Cell, HighlightSpacing, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
+    Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Table, TableState,
 };
 use unicode_width::UnicodeWidthStr;
+
+use crate::app::Focus;
+use crate::style::{DefaultStyle, StyleProvider};
 
 const PALETTES: [tailwind::Palette; 4] = [
     tailwind::BLUE,
@@ -105,7 +109,7 @@ impl DynamicData {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.rows.is_empty() || self.headers.is_empty()
     }
 }
 
@@ -139,6 +143,10 @@ impl DataTable {
             data,
             horizontal_scroll: 0,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 
     pub fn update_data(&mut self, headers: Vec<String>, rows: Vec<Vec<String>>) {
@@ -216,18 +224,29 @@ impl DataTable {
         self.colors = TableColors::new(&PALETTES[self.color_index]);
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
-        self.set_colors();
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, current_focus: &Focus) {
+        let style = DefaultStyle {
+            focus: current_focus.clone(),
+        };
+        if self.data.is_empty() {
+            let title_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(style.border_style(Focus::Table))
+                .style(style.block_style());
 
-        self.render_table(frame, area);
-        self.render_scrollbar(frame, area);
+            let title = Paragraph::new("No data output.Execute a query to get output")
+                .block(title_block)
+                .centered();
+
+            frame.render_widget(title, area);
+        } else {
+            self.set_colors();
+            self.render_table(frame, area);
+            self.render_scrollbar(frame, area);
+        }
     }
 
     fn render_table(&mut self, frame: &mut Frame, area: Rect) {
-        if self.data.is_empty() {
-            return;
-        }
-
         let header_style = Style::default()
             .fg(self.colors.header_fg)
             .bg(self.colors.header_bg);

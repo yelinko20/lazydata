@@ -295,8 +295,7 @@ impl App {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(layout[1]);
         self.query_editor.draw(f, right[0], self.focus.clone());
-
-        self.data_table.draw(f, right[1]);
+        self.data_table.draw(f, right[1], &self.focus.clone());
     }
 
     fn toggle_focus(&mut self) {
