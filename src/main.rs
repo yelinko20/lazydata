@@ -1,7 +1,9 @@
 mod app;
+mod crud;
 mod database;
 mod layout;
 mod style;
+mod utils;
 
 use app::App;
 use color_eyre::eyre::Result;

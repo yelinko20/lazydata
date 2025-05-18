@@ -224,21 +224,30 @@ impl DataTable {
         self.colors = TableColors::new(&PALETTES[self.color_index]);
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, current_focus: &Focus) {
+    pub fn build_status_paragraph<'a>(&self, title: &'a str, style: DefaultStyle) -> Paragraph<'a> {
+        let title_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(style.border_style(Focus::Table))
+            .style(style.block_style());
+
+        Paragraph::new(title).block(title_block)
+    }
+
+    pub fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        current_focus: &Focus,
+        title: Option<&str>,
+    ) {
         let style = DefaultStyle {
             focus: current_focus.clone(),
         };
         if self.data.is_empty() {
-            let title_block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(style.border_style(Focus::Table))
-                .style(style.block_style());
+            let message = title.unwrap_or("No data output.Execute a query to get output");
+            let status_widget = self.build_status_paragraph(message, style);
 
-            let title = Paragraph::new("No data output.Execute a query to get output")
-                .block(title_block)
-                .centered();
-
-            frame.render_widget(title, area);
+            frame.render_widget(status_widget, area);
         } else {
             self.set_colors();
             self.render_table(frame, area);

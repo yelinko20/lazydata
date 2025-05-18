@@ -1,3 +1,4 @@
+use crate::crud::executor::{ExecutionResult, execute_query};
 use crate::database::fetch::{fetch_query, metadata_to_tree_items};
 use crate::database::pool::DbPool;
 use crate::layout::query_editor::{Mode, Transition};
@@ -60,6 +61,7 @@ pub struct App {
     pub query_editor: QueryEditor,
     pub sidebar: SideBar,
     pub pool: Option<DbPool>,
+    pub status_message: Option<String>,
 }
 
 impl App {
@@ -72,6 +74,7 @@ impl App {
             query_editor: QueryEditor::new(Mode::Normal),
             sidebar: SideBar::new(vec![], Focus::Sidebar),
             pool: None,
+            status_message: None,
         }
     }
 
@@ -220,14 +223,16 @@ impl App {
                                 self.query = query.clone();
 
                                 if let Some(pool) = &self.pool {
-                                    match fetch_query(pool, &query).await {
-                                        Ok(result) => {
+                                    match execute_query(pool, &query).await {
+                                        Ok(ExecutionResult::Data(result)) => {
                                             self.data_table =
-                                                DataTable::new(result.headers, result.rows);
+                                                DataTable::new(result.headers, result.rows)
                                         }
-                                        Err(e) => {
-                                            println!("Query error: {:?}", e);
+                                        Ok(ExecutionResult::Affected(count)) => {
+                                            self.status_message =
+                                                Some(format!("✅ {} row(s) affected.", count));
                                         }
+                                        Err(_) => todo!(),
                                     }
                                 }
                             }
@@ -295,7 +300,12 @@ impl App {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(layout[1]);
         self.query_editor.draw(f, right[0], self.focus.clone());
-        self.data_table.draw(f, right[1], &self.focus.clone());
+        self.data_table.draw(
+            f,
+            right[1],
+            &self.focus.clone(),
+            self.status_message.as_deref(),
+        );
     }
 
     fn toggle_focus(&mut self) {
