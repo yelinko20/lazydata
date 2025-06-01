@@ -22,7 +22,7 @@ crossterm = { version = "0.28.1", features = ["event-stream"] }
 futures = "0.3.31"
 inquire = "0.7.5"
 ratatui = "0.29.0"
-sqlx = { version = "0.8.3", features = ["postgres", "mysql", "sqlite", "runtime-tokio","chrono", "macros","tls-rustls","uuid"] }
+sqlx = { version = "0.8.6", features = ["postgres", "mysql", "sqlite", "runtime-tokio","chrono", "macros","tls-rustls","uuid"] }
 strum = "0.27"
 tokio = { version = "1.45.1", features = ["full"] }
 unicode-width = "0.2.0"
