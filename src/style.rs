@@ -1,6 +1,17 @@
-use ratatui::style::{Color, Modifier, Style};
-
 use crate::app::Focus;
+use ratatui::style::{Modifier, Style};
+
+/// Predefined colors for consistent style
+pub mod theme {
+    use ratatui::style::Color;
+
+    pub const COLOR_FOCUS: Color = Color::Rgb(137, 220, 235);
+    pub const COLOR_UNFOCUSED: Color = Color::Rgb(88, 91, 112);
+    pub const COLOR_BLOCK_BG: Color = Color::Rgb(30, 30, 46);
+    pub const COLOR_HIGHLIGHT_BG: Color = Color::Rgb(137, 220, 235);
+    pub const COLOR_HIGHLIGHT_FG: Color = Color::Black;
+    pub const COLOR_BLACK: Color = Color::Black;
+}
 
 pub trait StyleProvider {
     fn border_style(&self, current: Focus) -> Style;
@@ -16,21 +27,21 @@ impl StyleProvider for DefaultStyle {
     fn border_style(&self, current: Focus) -> Style {
         if self.focus == current {
             Style::default()
-                .fg(Color::Rgb(137, 220, 235))
+                .fg(theme::COLOR_FOCUS)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(88, 91, 112))
+            Style::default().fg(theme::COLOR_UNFOCUSED)
         }
     }
 
     fn block_style(&self) -> Style {
-        Style::default().bg(Color::Rgb(30, 30, 46))
+        Style::default().bg(theme::COLOR_BLOCK_BG)
     }
 
     fn highlight_style(&self) -> Style {
         Style::default()
-            .bg(Color::Rgb(137, 220, 235))
-            .fg(Color::Black)
+            .bg(theme::COLOR_HIGHLIGHT_BG)
+            .fg(theme::COLOR_HIGHLIGHT_FG)
             .add_modifier(Modifier::BOLD)
     }
 }
@@ -38,7 +49,7 @@ impl StyleProvider for DefaultStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::style::{Modifier, Style};
 
     #[test]
     fn test_border_style_when_focused() {
@@ -49,7 +60,7 @@ mod tests {
         assert_eq!(
             result,
             Style::default()
-                .fg(Color::Rgb(137, 220, 235))
+                .fg(theme::COLOR_FOCUS)
                 .add_modifier(Modifier::BOLD)
         )
     }
@@ -60,7 +71,7 @@ mod tests {
             focus: Focus::Sidebar,
         };
         let result = style.block_style();
-        assert_eq!(result, Style::default().bg(Color::Rgb(30, 30, 46)))
+        assert_eq!(result, Style::default().bg(theme::COLOR_BLOCK_BG))
     }
 
     #[test]
@@ -72,8 +83,8 @@ mod tests {
         assert_eq!(
             result,
             Style::default()
-                .bg(Color::Rgb(137, 220, 235))
-                .fg(Color::Black)
+                .bg(theme::COLOR_HIGHLIGHT_BG)
+                .fg(theme::COLOR_HIGHLIGHT_FG)
                 .add_modifier(Modifier::BOLD)
         )
     }

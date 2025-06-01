@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::palette::tailwind;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::Text;
@@ -10,6 +10,7 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::Focus;
+use crate::components::tabs::StatefulTabs;
 use crate::style::{DefaultStyle, StyleProvider};
 
 const PALETTES: [tailwind::Palette; 4] = [
@@ -113,7 +114,7 @@ impl DynamicData {
     }
 }
 
-pub struct DataTable {
+pub struct DataTable<'a> {
     state: TableState,
     data: DynamicData,
     vertical_scroll_state: ScrollbarState,
@@ -121,11 +122,16 @@ pub struct DataTable {
     horizontal_scroll: usize,
     colors: TableColors,
     color_index: usize,
+    pub tabs: StatefulTabs<'a>,
 }
-#[allow(dead_code)]
-impl DataTable {
+
+impl<'a> DataTable<'a> {
     pub fn new(headers: Vec<String>, rows: Vec<Vec<String>>) -> Self {
         let data = DynamicData::from_query_results(headers, rows);
+        let mut tabs = StatefulTabs::new(vec!["Data Output", "Messages", "Query History"]);
+        if data.is_empty() {
+            tabs.set_index(1);
+        }
         Self {
             state: TableState::default().with_selected(if data.is_empty() {
                 None
@@ -142,6 +148,7 @@ impl DataTable {
             color_index: 0,
             data,
             horizontal_scroll: 0,
+            tabs,
         }
     }
 
@@ -152,13 +159,13 @@ impl DataTable {
     pub fn update_data(&mut self, headers: Vec<String>, rows: Vec<Vec<String>>) {
         self.data = DynamicData::from_query_results(headers, rows);
         self.state
-            .select(if self.data.is_empty() { None } else { Some(0) });
+            .select(if self.is_empty() { None } else { Some(0) });
         self.vertical_scroll_state =
             ScrollbarState::new((self.data.len().saturating_sub(1)) * ITEM_HEIGHT);
     }
 
     pub fn next_row(&mut self) {
-        if self.data.is_empty() {
+        if self.is_empty() {
             return;
         }
 
@@ -224,10 +231,10 @@ impl DataTable {
         self.colors = TableColors::new(&PALETTES[self.color_index]);
     }
 
-    pub fn build_status_paragraph<'a>(&self, title: &'a str, style: DefaultStyle) -> Paragraph<'a> {
+    pub fn build_status_paragraph(&self, title: &'a str, style: &DefaultStyle) -> Paragraph<'a> {
         let title_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(style.border_style(Focus::Table))
+            .border_style(style.border_style(Focus::Table)) // Assuming Table focus for status
             .style(style.block_style());
 
         Paragraph::new(title).block(title_block)
@@ -238,24 +245,88 @@ impl DataTable {
         frame: &mut Frame,
         area: Rect,
         current_focus: &Focus,
-        title: Option<&str>,
+        _title: Option<&str>,
     ) {
-        let style = DefaultStyle {
-            focus: current_focus.clone(),
-        };
-        if self.data.is_empty() {
-            let message = title.unwrap_or("No data output.Execute a query to get output");
-            let status_widget = self.build_status_paragraph(message, style);
+        let main_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
 
-            frame.render_widget(status_widget, area);
-        } else {
-            self.set_colors();
-            self.render_table(frame, area);
-            self.render_scrollbar(frame, area);
+        let tab_area = main_layout[0];
+        let content_area = main_layout[1];
+
+        let tabs_widget = self.tabs.widget().block(
+            Block::default().border_style(
+                DefaultStyle {
+                    focus: current_focus.clone(),
+                }
+                .border_style(Focus::Table),
+            ),
+        );
+        frame.render_widget(tabs_widget, tab_area);
+
+        match self.tabs.index {
+            0 => {
+                // "Results" tab
+                self.set_colors();
+                if self.is_empty() {
+                    let message = "No data output. Execute a query to get output";
+                    let status_widget = self.build_status_paragraph(
+                        message,
+                        &DefaultStyle {
+                            focus: current_focus.clone(),
+                        },
+                    );
+                    frame.render_widget(status_widget, content_area);
+                } else {
+                    self.render_table(frame, content_area, current_focus);
+                    self.render_scrollbar(frame, content_area);
+                }
+            }
+            1 => {
+                let messages_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(
+                        DefaultStyle {
+                            focus: current_focus.clone(),
+                        }
+                        .border_style(Focus::Editor),
+                    )
+                    .style(
+                        DefaultStyle {
+                            focus: current_focus.clone(),
+                        }
+                        .block_style(),
+                    );
+                let messages_paragraph =
+                    Paragraph::new("This is where query messages would appear.")
+                        .block(messages_block);
+                frame.render_widget(messages_paragraph, content_area);
+            }
+            2 => {
+                let history_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(
+                        DefaultStyle {
+                            focus: current_focus.clone(),
+                        }
+                        .border_style(Focus::Editor),
+                    ) // Example focus
+                    .style(
+                        DefaultStyle {
+                            focus: current_focus.clone(),
+                        }
+                        .block_style(),
+                    );
+                let history_paragraph = Paragraph::new("This is where query history would appear.")
+                    .block(history_block);
+                frame.render_widget(history_paragraph, content_area);
+            }
+            _ => {} // Handle other tabs or default
         }
     }
 
-    fn render_table(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_table(&mut self, frame: &mut Frame, area: Rect, current_focus: &Focus) {
         let header_style = Style::default()
             .fg(self.colors.header_fg)
             .bg(self.colors.header_bg);
@@ -357,7 +428,23 @@ impl DataTable {
                 "".into(),
             ]))
             .bg(self.colors.buffer_bg)
-            .highlight_spacing(HighlightSpacing::Always);
+            .highlight_spacing(HighlightSpacing::Always)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(
+                        DefaultStyle {
+                            focus: current_focus.clone(),
+                        }
+                        .border_style(Focus::Table),
+                    ) // Border for the table
+                    .style(
+                        DefaultStyle {
+                            focus: current_focus.clone(),
+                        }
+                        .block_style(),
+                    ),
+            );
 
         frame.render_stateful_widget(t, area, &mut self.state);
     }

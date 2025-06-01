@@ -53,18 +53,18 @@ impl Focus {
     }
 }
 
-pub struct App {
+pub struct App<'a> {
     pub focus: Focus,
     pub query: String,
     pub exit: bool,
-    pub data_table: DataTable,
+    pub data_table: DataTable<'a>,
     pub query_editor: QueryEditor,
     pub sidebar: SideBar,
     pub pool: Option<DbPool>,
     pub status_message: Option<String>,
 }
 
-impl App {
+impl App<'_> {
     pub fn default() -> Self {
         Self {
             focus: Focus::Sidebar,
@@ -191,7 +191,7 @@ impl App {
         let query = self.current_query();
         if !query.is_empty() {
             if let Ok(result) = fetch_query(&pool, &query).await {
-                self.data_table = DataTable::new(result.headers, result.rows);
+                self.data_table.update_data(result.headers, result.rows);
             }
         }
 
@@ -260,12 +260,29 @@ impl App {
     fn handle_data_table_keys(&mut self, key: KeyCode) {
         use KeyCode::*;
         match key {
+            KeyCode::Char('[') => self.data_table.tabs.previous(),
+            KeyCode::Char(']') => self.data_table.tabs.next(),
+
             Char('j') | Down => self.data_table.next_row(),
             Char('k') | Up => self.data_table.previous_row(),
+
             Char('l') => self.data_table.next_column(),
             Char('h') => self.data_table.previous_column(),
-            Char('x') | Right => self.data_table.scroll_right(),
-            Char('X') | Left => self.data_table.scroll_left(),
+
+            Char('>') | Right => self.data_table.scroll_right(),
+            Char('<') | Left => self.data_table.scroll_left(),
+
+            Char('n') => self.data_table.next_color(),
+            Char('p') => self.data_table.previous_color(),
+
+            Char(c) if c.is_ascii_digit() => {
+                if let Some(digit) = c.to_digit(10) {
+                    if digit > 0 && (digit as usize) <= self.data_table.tabs.titles.len() {
+                        self.data_table.tabs.set_index(digit as usize - 1);
+                    }
+                }
+            }
+
             _ => {}
         }
     }

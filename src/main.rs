@@ -1,4 +1,5 @@
 mod app;
+mod components;
 mod crud;
 mod database;
 mod layout;
