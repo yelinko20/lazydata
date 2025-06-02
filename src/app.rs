@@ -217,7 +217,7 @@ impl App<'_> {
                         KeyCode::Tab => {
                             self.toggle_focus();
                         }
-                        KeyCode::Enter => {
+                        KeyCode::F(5) => {
                             let query = self.current_query();
                             if !query.is_empty() {
                                 self.query = query.clone();

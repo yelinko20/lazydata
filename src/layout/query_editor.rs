@@ -2,12 +2,16 @@ use color_eyre::eyre::Result;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders};
+use ratatui::text::Text;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use std::fmt;
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
 
 use crate::app::Focus;
 use crate::style::{DefaultStyle, StyleProvider};
+use crate::utils::highlighter::highlight_sql;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -80,9 +84,40 @@ impl QueryEditor {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, current_focus: Focus) {
-        self.textarea.set_block(self.mode.block(&current_focus));
+        let ps = SyntaxSet::load_defaults_newlines();
+        let ts = ThemeSet::load_defaults();
+        let theme = &ts.themes["base16-ocean.dark"];
+
+        let text = self.textarea.lines().join("\n");
+        let cursor = self.textarea.cursor();
         self.textarea.set_cursor_style(self.mode.cursor_style());
-        frame.render_widget(&self.textarea, area);
+        let highlighted_lines = highlight_sql(
+            &text,
+            &ps,
+            theme,
+            cursor.0,
+            cursor.1,
+            self.mode.cursor_style(),
+        );
+
+        let block = self.mode.block(&current_focus);
+
+        let paragraph = Paragraph::new(Text::from(highlighted_lines))
+            .block(block)
+            .style(
+                DefaultStyle {
+                    focus: current_focus.clone(),
+                }
+                .block_style(),
+            );
+
+        frame.render_widget(paragraph, area);
+        let cursor_x = area.x + cursor.1 as u16 + 1;
+        let cursor_y = area.y + cursor.0 as u16 + 1;
+
+        if cursor_y < area.y + area.height && cursor_x < area.x + area.width {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
     }
 
     pub fn handle_keys(&mut self, input: Input) -> Transition {
