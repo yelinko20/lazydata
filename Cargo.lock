@@ -1124,6 +1124,7 @@ dependencies = [
  "crossterm 0.28.1",
  "futures",
  "inquire",
+ "once_cell",
  "ratatui",
  "rmpv",
  "serde_json",

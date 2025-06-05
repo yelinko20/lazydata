@@ -1,8 +1,9 @@
-use crate::crud::executor::{ExecutionResult, execute_query};
+use crate::crud::executor::{DataMeta, ExecutionResult, execute_query};
 use crate::database::fetch::{fetch_query, metadata_to_tree_items};
 use crate::database::pool::DbPool;
 use crate::layout::query_editor::{Mode, Transition};
 use crate::layout::{data_table::DataTable, sidebar::SideBar};
+use crate::state::get_query_stats;
 use crate::{
     database::{
         connector::{ConnectionDetails, DatabaseType, get_connection_details},
@@ -61,7 +62,6 @@ pub struct App<'a> {
     pub query_editor: QueryEditor,
     pub sidebar: SideBar,
     pub pool: Option<DbPool>,
-    pub status_message: Option<String>,
 }
 
 impl App<'_> {
@@ -74,7 +74,6 @@ impl App<'_> {
             query_editor: QueryEditor::new(Mode::Normal),
             sidebar: SideBar::new(vec![], Focus::Sidebar),
             pool: None,
-            status_message: None,
         }
     }
 
@@ -224,15 +223,28 @@ impl App<'_> {
 
                                 if let Some(pool) = &self.pool {
                                     match execute_query(pool, &query).await {
-                                        Ok(ExecutionResult::Data(result)) => {
+                                        Ok(ExecutionResult::Data(
+                                            data,
+                                            DataMeta { rows: _, message },
+                                        )) => {
                                             self.data_table =
-                                                DataTable::new(result.headers, result.rows)
+                                                DataTable::new(data.headers, data.rows);
+                                            self.data_table.status_message = Some(message);
+                                            if let Some(stats) = get_query_stats().await {
+                                                self.data_table.elapsed = stats.elapsed
+                                            }
                                         }
-                                        Ok(ExecutionResult::Affected(count)) => {
-                                            self.status_message =
-                                                Some(format!("✅ {} row(s) affected.", count));
+                                        Ok(ExecutionResult::Affected { rows: _, message }) => {
+                                            self.data_table.status_message = Some(message);
+                                            if let Some(stats) = get_query_stats().await {
+                                                self.data_table.elapsed = stats.elapsed
+                                            }
                                         }
-                                        Err(_) => todo!(),
+                                        Err(err) => {
+                                            self.data_table.tabs.set_index(1);
+                                            self.data_table.status_message =
+                                                Some(format!("❌ Error: {}", err));
+                                        }
                                     }
                                 }
                             }
@@ -317,12 +329,7 @@ impl App<'_> {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(layout[1]);
         self.query_editor.draw(f, right[0], self.focus.clone());
-        self.data_table.draw(
-            f,
-            right[1],
-            &self.focus.clone(),
-            self.status_message.as_deref(),
-        );
+        self.data_table.draw(f, right[1], &self.focus.clone());
     }
 
     fn toggle_focus(&mut self) {

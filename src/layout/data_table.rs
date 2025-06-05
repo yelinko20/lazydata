@@ -1,16 +1,19 @@
-use ratatui::Frame;
+use std::time::Duration;
+
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::palette::tailwind;
 use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::Text;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Table, TableState,
+    ScrollbarState, Table, TableState, Tabs,
 };
+use ratatui::{Frame, symbols};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::Focus;
 use crate::components::tabs::StatefulTabs;
+use crate::style::theme::COLOR_BLOCK_BG;
 use crate::style::{DefaultStyle, StyleProvider};
 
 const PALETTES: [tailwind::Palette; 4] = [
@@ -123,6 +126,8 @@ pub struct DataTable<'a> {
     colors: TableColors,
     color_index: usize,
     pub tabs: StatefulTabs<'a>,
+    pub status_message: Option<String>,
+    pub elapsed: Duration,
 }
 
 impl<'a> DataTable<'a> {
@@ -149,6 +154,8 @@ impl<'a> DataTable<'a> {
             data,
             horizontal_scroll: 0,
             tabs,
+            status_message: None,
+            elapsed: Duration::ZERO,
         }
     }
 
@@ -157,6 +164,9 @@ impl<'a> DataTable<'a> {
     }
 
     pub fn update_data(&mut self, headers: Vec<String>, rows: Vec<Vec<String>>) {
+        if headers.is_empty() || rows.is_empty() {
+            self.tabs.set_index(1);
+        }
         self.data = DynamicData::from_query_results(headers, rows);
         self.state
             .select(if self.is_empty() { None } else { Some(0) });
@@ -240,20 +250,40 @@ impl<'a> DataTable<'a> {
         Paragraph::new(title).block(title_block)
     }
 
-    pub fn draw(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        current_focus: &Focus,
-        _title: Option<&str>,
-    ) {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, current_focus: &Focus) {
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
             .split(area);
 
         let tab_area = main_layout[0];
         let content_area = main_layout[1];
+        let query_info_area = main_layout[2];
+
+        let base_style = Style::default().bg(COLOR_BLOCK_BG);
+        let total_rows_str = format!("Total Rows: {}", self.data.len());
+        let query_done_str = format!("Query Complete: {} ms", self.elapsed.as_millis());
+
+        let tab_lines = [total_rows_str, query_done_str]
+            .iter()
+            .map(|text| Line::from(Span::styled(text.clone(), base_style)))
+            .collect::<Vec<_>>();
+
+        let query_info_tabs = Tabs::new(tab_lines)
+            .select(0)
+            .highlight_style(base_style)
+            .divider(symbols::line::VERTICAL)
+            .style(
+                DefaultStyle {
+                    focus: current_focus.clone(),
+                }
+                .block_style(),
+            );
+        frame.render_widget(query_info_tabs, query_info_area);
 
         let tabs_widget = self.tabs.widget().block(
             Block::default().border_style(
@@ -290,7 +320,7 @@ impl<'a> DataTable<'a> {
                         DefaultStyle {
                             focus: current_focus.clone(),
                         }
-                        .border_style(Focus::Editor),
+                        .border_style(Focus::Table),
                     )
                     .style(
                         DefaultStyle {
@@ -298,9 +328,8 @@ impl<'a> DataTable<'a> {
                         }
                         .block_style(),
                     );
-                let messages_paragraph =
-                    Paragraph::new("This is where query messages would appear.")
-                        .block(messages_block);
+                let message = self.status_message.clone().unwrap_or("".to_string());
+                let messages_paragraph = Paragraph::new(message).block(messages_block);
                 frame.render_widget(messages_paragraph, content_area);
             }
             2 => {
@@ -310,7 +339,7 @@ impl<'a> DataTable<'a> {
                         DefaultStyle {
                             focus: current_focus.clone(),
                         }
-                        .border_style(Focus::Editor),
+                        .border_style(Focus::Table),
                     ) // Example focus
                     .style(
                         DefaultStyle {
@@ -338,9 +367,9 @@ impl<'a> DataTable<'a> {
             .add_modifier(Modifier::REVERSED)
             .fg(self.colors.selected_cell_style_fg);
 
-        // Calculate visible columns based on available width
+        let numbering_col_width = 4; // Width for "No." column (e.g., "  1 ", " 12 ", etc.)
         let mut visible_columns = 0;
-        let mut total_width = 0;
+        let mut total_width = numbering_col_width; // Include "No." column in width calculation
         let available_width = area.width.saturating_sub(1); // Account for scrollbar
 
         // First pass: calculate how many columns can fit
@@ -358,8 +387,8 @@ impl<'a> DataTable<'a> {
         }
 
         // Second pass: adjust column widths if needed
-        let mut adjusted_widths = Vec::new();
-        let mut remaining_width = available_width;
+        let mut adjusted_widths = vec![numbering_col_width]; // Prepend "No." column width
+        let mut remaining_width = available_width.saturating_sub(numbering_col_width);
         let columns_to_show = self
             .data
             .column_widths()
@@ -372,7 +401,6 @@ impl<'a> DataTable<'a> {
                 adjusted_widths.push(width);
                 remaining_width -= width;
             } else {
-                // If we can't fit the full width, use the remaining space
                 adjusted_widths.push(remaining_width);
                 break;
             }
@@ -387,9 +415,9 @@ impl<'a> DataTable<'a> {
             .cloned()
             .collect();
 
-        let header = visible_headers
-            .iter()
-            .map(|h| Cell::from(h.clone()))
+        // Create header row, without a header cell for the "No." column
+        let header = std::iter::once(Cell::from("")) // Empty header for "No." column
+            .chain(visible_headers.iter().map(|h| Cell::from(h.clone())))
             .collect::<Row>()
             .style(header_style)
             .height(1);
@@ -400,14 +428,17 @@ impl<'a> DataTable<'a> {
             } else {
                 self.colors.alt_row_color
             };
-            Row::new(
-                row.iter()
-                    .skip(self.horizontal_scroll)
-                    .take(visible_columns)
-                    .map(|text| Cell::from(Text::from(format!("\n{text}\n")))),
-            )
-            .style(Style::new().fg(self.colors.row_fg).bg(color))
-            .height(ITEM_HEIGHT as u16)
+
+            let number_cell = Cell::from(Text::from(format!("\n{}\n", i + 1)));
+            let data_cells = row
+                .iter()
+                .skip(self.horizontal_scroll)
+                .take(visible_columns)
+                .map(|text| Cell::from(Text::from(format!("\n{text}\n"))));
+
+            Row::new(std::iter::once(number_cell).chain(data_cells))
+                .style(Style::new().fg(self.colors.row_fg).bg(color))
+                .height(ITEM_HEIGHT as u16)
         });
 
         let bar = " █ ";
@@ -437,7 +468,7 @@ impl<'a> DataTable<'a> {
                             focus: current_focus.clone(),
                         }
                         .border_style(Focus::Table),
-                    ) // Border for the table
+                    )
                     .style(
                         DefaultStyle {
                             focus: current_focus.clone(),
