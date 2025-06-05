@@ -8,7 +8,7 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.88"
-color-eyre = "0.6.3"
+color-eyre = "0.6.5"
 colored = "3.0"
 clap = { version = "4.5.38", features = [
     "derive",
