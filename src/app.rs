@@ -1,5 +1,5 @@
 use crate::crud::executor::{DataMeta, ExecutionResult, execute_query};
-use crate::database::fetch::{fetch_query, metadata_to_tree_items};
+use crate::database::fetch::metadata_to_tree_items;
 use crate::database::pool::DbPool;
 use crate::layout::query_editor::{Mode, Transition};
 use crate::layout::{data_table::DataTable, sidebar::SideBar};
@@ -135,7 +135,7 @@ impl App<'_> {
 
         println!("✅ Found {} tables", metadata.len());
         let items = metadata_to_tree_items(&metadata);
-        self.setup_ui(items, pool).await?;
+        self.setup_ui(items).await?;
 
         stdout().execute(EnableMouseCapture)?;
         let terminal = ratatui::init();
@@ -178,21 +178,10 @@ impl App<'_> {
         (spinner_handle, loading)
     }
 
-    async fn setup_ui(
-        &mut self,
-        sidebar_items: Vec<TreeItem<'static, String>>,
-        pool: DbPool,
-    ) -> Result<()> {
+    async fn setup_ui(&mut self, sidebar_items: Vec<TreeItem<'static, String>>) -> Result<()> {
         self.focus = Focus::Sidebar;
         self.sidebar.update_items(sidebar_items);
         self.sidebar.update_focus(Focus::Sidebar);
-
-        let query = self.current_query();
-        if !query.is_empty() {
-            if let Ok(result) = fetch_query(&pool, &query).await {
-                self.data_table.update_data(result.headers, result.rows);
-            }
-        }
 
         Ok(())
     }
@@ -227,8 +216,10 @@ impl App<'_> {
                                             data,
                                             DataMeta { rows: _, message },
                                         )) => {
-                                            self.data_table =
-                                                DataTable::new(data.headers, data.rows);
+                                            self.data_table = DataTable::new(
+                                                data.headers.clone(),
+                                                data.rows.clone(),
+                                            );
                                             self.data_table.status_message = Some(message);
                                             if let Some(stats) = get_query_stats().await {
                                                 self.data_table.elapsed = stats.elapsed
@@ -286,6 +277,25 @@ impl App<'_> {
 
             Char('n') => self.data_table.next_color(),
             Char('p') => self.data_table.previous_color(),
+
+            Char('g') => self.data_table.jump_to_row(0),
+            Char('G') => self
+                .data_table
+                .jump_to_row(self.data_table.data.len().saturating_sub(1)),
+
+            Char('w') => self.data_table.adjust_column_width(1),
+            Char('W') => self.data_table.adjust_column_width(-1),
+
+            Char('y') => {
+                if let Some(content) = self.data_table.copy_selected_cell() {
+                    self.data_table.status_message = Some(format!("Copied: {}", content));
+                }
+            }
+            Char('Y') => {
+                if let Some(content) = self.data_table.copy_selected_row() {
+                    self.data_table.status_message = Some(format!("Copied row: {}", content));
+                }
+            }
 
             Char(c) if c.is_ascii_digit() => {
                 if let Some(digit) = c.to_digit(10) {

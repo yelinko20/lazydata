@@ -1,12 +1,13 @@
-use crate::layout::data_table::DynamicData;
-
 use super::executor::DatabaseExecutor;
 use async_trait::async_trait;
+use hex;
+use serde_json::Value;
 use sqlx::{
-    Column, PgPool, Row,
+    PgPool, Row,
     postgres::PgRow,
     types::{Json, Uuid, chrono},
 };
+
 pub struct PostgresExecutor {
     pool: PgPool,
 }
@@ -16,91 +17,80 @@ impl PostgresExecutor {
         Self { pool }
     }
 
-    fn get_value_as_string(row: &PgRow, index: usize) -> String {
-        row.try_get::<String, _>(index)
-            .or_else(|_| row.try_get::<&str, _>(index).map(|v| v.to_string()))
-            .or_else(|_| row.try_get::<i16, _>(index).map(|v| v.to_string()))
-            .or_else(|_| row.try_get::<i32, _>(index).map(|v| v.to_string()))
-            .or_else(|_| row.try_get::<i64, _>(index).map(|v| v.to_string()))
-            .or_else(|_| row.try_get::<f32, _>(index).map(|v| v.to_string()))
-            .or_else(|_| row.try_get::<f64, _>(index).map(|v| v.to_string()))
-            .or_else(|_| row.try_get::<bool, _>(index).map(|v| v.to_string()))
-            .or_else(|_| row.try_get::<Uuid, _>(index).map(|v| v.to_string()))
-            .or_else(|_| {
-                row.try_get::<chrono::NaiveDate, _>(index)
-                    .map(|v| v.to_string())
-            })
-            .or_else(|_| {
-                row.try_get::<chrono::NaiveDateTime, _>(index)
-                    .map(|v| v.to_string())
-            })
-            .or_else(|_| {
-                row.try_get::<chrono::NaiveTime, _>(index)
-                    .map(|v| v.to_string())
-            })
-            .or_else(|_| {
-                row.try_get::<chrono::DateTime<chrono::Utc>, _>(index)
-                    .map(|v| v.to_string())
-            })
-            .or_else(|_| {
-                row.try_get::<Json<serde_json::Value>, _>(index)
-                    .map(|v| v.to_string())
-            })
-            .or_else(|_| row.try_get::<Vec<u8>, _>(index).map(|v| format!("{:?}", v)))
-            .unwrap_or_else(|_| "".to_string())
+    async fn execute_query(&self, query: &str) -> Result<u64, sqlx::Error> {
+        Ok(sqlx::query(query)
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
     }
 }
 
 #[async_trait]
 impl DatabaseExecutor for PostgresExecutor {
-    async fn fetch(&self, query: &str) -> Result<DynamicData, sqlx::Error> {
+    type Row = PgRow;
+
+    async fn fetch(&self, query: &str) -> Result<Vec<PgRow>, sqlx::Error> {
         let rows = sqlx::query(query).fetch_all(&self.pool).await?;
-
-        if rows.is_empty() {
-            return Ok(DynamicData {
-                headers: vec![],
-                rows: vec![],
-                column_widths: vec![],
-            });
-        }
-
-        let headers: Vec<String> = rows[0]
-            .columns()
-            .iter()
-            .map(|c| c.name().to_string())
-            .collect();
-        let mut column_widths: Vec<u16> = headers.iter().map(|h| h.len() as u16).collect();
-
-        let mut data_rows = Vec::new();
-        for row in rows {
-            let mut data_row = Vec::new();
-            for (i, cw) in column_widths.iter_mut().enumerate() {
-                let val = Self::get_value_as_string(&row, i);
-                *cw = (*cw).max(val.len() as u16);
-                data_row.push(val);
-            }
-            data_rows.push(data_row);
-        }
-
-        Ok(DynamicData {
-            headers,
-            rows: data_rows,
-            column_widths,
-        })
+        Ok(rows)
     }
 
     async fn insert(&self, query: &str) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(query).execute(&self.pool).await?;
-        Ok(res.rows_affected())
+        self.execute_query(query).await
     }
 
     async fn update(&self, query: &str) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(query).execute(&self.pool).await?;
-        Ok(res.rows_affected())
+        self.execute_query(query).await
     }
 
     async fn delete(&self, query: &str) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(query).execute(&self.pool).await?;
-        Ok(res.rows_affected())
+        self.execute_query(query).await
+    }
+
+    fn get_value_as_string(&self, row: &PgRow, index: usize) -> String {
+        macro_rules! try_get_string {
+            ($($typ:ty),*) => {
+                $(
+                    if let Ok(val) = row.try_get::<$typ, _>(index) {
+                        return val.to_string();
+                    }
+                )*
+            };
+        }
+
+        try_get_string!(
+            String,
+            &str,
+            i16,
+            i32,
+            i64,
+            f32,
+            f64,
+            bool,
+            Uuid,
+            chrono::NaiveDate,
+            chrono::NaiveDateTime,
+            chrono::NaiveTime,
+            chrono::DateTime<chrono::Utc>
+        );
+
+        if let Ok(val) = row.try_get::<Value, _>(index) {
+            return match serde_json::to_string(&val) {
+                Ok(s) => s,
+                Err(e) => format!("[json-error: {}]", e),
+            };
+        }
+
+        if let Ok(Json(val)) = row.try_get::<Json<Value>, _>(index) {
+            return match serde_json::to_string(&val) {
+                Ok(s) => s,
+                Err(e) => format!("[json-error: {}]", e),
+            };
+        }
+
+        if let Ok(val) = row.try_get::<Vec<u8>, _>(index) {
+            return hex::encode(val);
+        }
+
+        "[null]".to_string()
     }
 }

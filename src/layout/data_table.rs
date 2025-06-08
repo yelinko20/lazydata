@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -15,6 +16,8 @@ use crate::app::Focus;
 use crate::components::tabs::StatefulTabs;
 use crate::style::theme::COLOR_BLOCK_BG;
 use crate::style::{DefaultStyle, StyleProvider};
+use arboard::Clipboard;
+use serde_json::Value;
 
 const PALETTES: [tailwind::Palette; 4] = [
     tailwind::BLUE,
@@ -23,7 +26,7 @@ const PALETTES: [tailwind::Palette; 4] = [
     tailwind::RED,
 ];
 
-const ITEM_HEIGHT: usize = 4;
+const ITEM_HEIGHT: usize = 3;
 
 struct TableColors {
     buffer_bg: Color,
@@ -58,15 +61,18 @@ pub struct DynamicData {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub column_widths: Vec<u16>,
+    pub min_column_widths: Vec<u16>,
 }
 
 impl DynamicData {
     pub fn new(headers: Vec<String>, rows: Vec<Vec<String>>) -> Self {
         let column_widths = Self::calculate_column_widths(&headers, &rows);
+        let min_column_widths = column_widths.clone();
         Self {
             headers,
             rows,
             column_widths,
+            min_column_widths,
         }
     }
 
@@ -75,25 +81,17 @@ impl DynamicData {
     }
 
     fn calculate_column_widths(headers: &[String], rows: &[Vec<String>]) -> Vec<u16> {
-        let mut widths = vec![0; headers.len()];
-
-        for (i, header) in headers.iter().enumerate() {
-            widths[i] = header.width() as u16;
-        }
+        let mut widths: Vec<u16> = headers.iter().map(|h| h.width() as u16).collect();
 
         for row in rows {
             for (i, cell) in row.iter().enumerate() {
                 if i < widths.len() {
-                    let cell_width = cell.width() as u16;
-                    if cell_width > widths[i] {
-                        widths[i] = cell_width;
-                    }
+                    widths[i] = widths[i].max(cell.width() as u16);
                 }
             }
         }
 
-        // Add minimal padding and ensure minimum width
-        widths.iter().map(|&w| std::cmp::max(w + 1, 3)).collect()
+        widths.iter().map(|&w| w.saturating_add(2).max(3)).collect()
     }
 
     pub fn headers(&self) -> &[String] {
@@ -115,11 +113,19 @@ impl DynamicData {
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty() || self.headers.is_empty()
     }
+
+    pub fn adjust_column_width(&mut self, column: usize, delta: i16) {
+        if column < self.column_widths.len() {
+            let min_width = self.min_column_widths[column];
+            let new_width = self.column_widths[column] as i16 + delta;
+            self.column_widths[column] = new_width.max(min_width as i16) as u16;
+        }
+    }
 }
 
 pub struct DataTable<'a> {
     state: TableState,
-    data: DynamicData,
+    pub data: DynamicData,
     vertical_scroll_state: ScrollbarState,
     horizontal_scroll_state: ScrollbarState,
     horizontal_scroll: usize,
@@ -147,7 +153,7 @@ impl<'a> DataTable<'a> {
                 (data.len().saturating_sub(1)) * ITEM_HEIGHT,
             ),
             horizontal_scroll_state: ScrollbarState::new(
-                data.column_widths.len().saturating_add(1),
+                data.column_widths.iter().sum::<u16>().saturating_sub(1) as usize,
             ),
             colors: TableColors::new(&PALETTES[0]),
             color_index: 0,
@@ -161,17 +167,6 @@ impl<'a> DataTable<'a> {
 
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
-    }
-
-    pub fn update_data(&mut self, headers: Vec<String>, rows: Vec<Vec<String>>) {
-        if headers.is_empty() || rows.is_empty() {
-            self.tabs.set_index(1);
-        }
-        self.data = DynamicData::from_query_results(headers, rows);
-        self.state
-            .select(if self.is_empty() { None } else { Some(0) });
-        self.vertical_scroll_state =
-            ScrollbarState::new((self.data.len().saturating_sub(1)) * ITEM_HEIGHT);
     }
 
     pub fn next_row(&mut self) {
@@ -241,10 +236,113 @@ impl<'a> DataTable<'a> {
         self.colors = TableColors::new(&PALETTES[self.color_index]);
     }
 
+    pub fn jump_to_row(&mut self, row: usize) {
+        if row < self.data.len() {
+            self.state.select(Some(row));
+            self.vertical_scroll_state = self.vertical_scroll_state.position(row * ITEM_HEIGHT);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn jump_to_column(&mut self, col: usize) {
+        if col < self.data.headers().len() {
+            self.horizontal_scroll = col;
+            self.horizontal_scroll_state = self.horizontal_scroll_state.position(col);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn search_in_table(&mut self, query: &str) -> Option<(usize, usize)> {
+        for (row_idx, row) in self.data.rows().iter().enumerate() {
+            for (col_idx, cell) in row.iter().enumerate() {
+                if cell.to_lowercase().contains(&query.to_lowercase()) {
+                    return Some((row_idx, col_idx));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn copy_selected_cell(&self) -> Option<String> {
+        let content = match (self.state.selected(), self.state.selected_column()) {
+            (Some(row_idx), Some(col_idx)) => {
+                let adjusted_col = col_idx.saturating_sub(1) + self.horizontal_scroll;
+                let row = self.data.rows().get(row_idx)?;
+
+                if col_idx == 0 {
+                    (row_idx + 1).to_string()
+                } else if adjusted_col < row.len() {
+                    row[adjusted_col].clone()
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+
+        if let Ok(mut clipboard) = Clipboard::new() {
+            let _ = clipboard.set_text(&content);
+        }
+
+        Some(content)
+    }
+
+    pub fn copy_selected_row(&self) -> Option<String> {
+        let selected_row_index = self.state.selected()?;
+
+        let headers = self.data.headers();
+        let row_data = self.data.rows().get(selected_row_index)?;
+
+        if headers.len() != row_data.len() {
+            eprintln!(
+                "Error: Headers count ({}) does not match row data count ({}) for selected row index {}. Cannot form proper JSON.",
+                headers.len(),
+                row_data.len(),
+                selected_row_index
+            );
+            return None;
+        }
+
+        let row_as_json_object: HashMap<String, Value> = headers
+            .iter()
+            .zip(row_data.iter()) // Pair headers with cell values
+            .map(|(header, cell_value)| {
+                let json_value = if cell_value.eq_ignore_ascii_case("null")
+                    || cell_value.eq_ignore_ascii_case("[null]")
+                {
+                    Value::Null
+                } else {
+                    Value::String(cell_value.clone())
+                };
+                (header.clone(), json_value)
+            })
+            .collect();
+
+        let json_string = serde_json::to_string_pretty(&row_as_json_object)
+            .map_err(|e| eprintln!("Error: Failed to serialize row data to JSON: {}", e))
+            .ok()?;
+
+        if let Ok(mut clipboard) = Clipboard::new() {
+            if let Err(e) = clipboard.set_text(&json_string) {
+                eprintln!("Warning: Could not set clipboard text: {}", e);
+            }
+        } else {
+            eprintln!("Warning: Could not access clipboard.");
+        }
+
+        Some(json_string)
+    }
+
+    pub fn adjust_column_width(&mut self, delta: i16) {
+        if let Some(col) = self.state.selected_column() {
+            self.data.adjust_column_width(col, delta);
+        }
+    }
+
     pub fn build_status_paragraph(&self, title: &'a str, style: &DefaultStyle) -> Paragraph<'a> {
         let title_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(style.border_style(Focus::Table)) // Assuming Table focus for status
+            .border_style(style.border_style(Focus::Table))
             .style(style.block_style());
 
         Paragraph::new(title).block(title_block)
@@ -297,7 +395,6 @@ impl<'a> DataTable<'a> {
 
         match self.tabs.index {
             0 => {
-                // "Results" tab
                 self.set_colors();
                 if self.is_empty() {
                     let message = "No data output. Execute a query to get output";
@@ -340,7 +437,7 @@ impl<'a> DataTable<'a> {
                             focus: current_focus.clone(),
                         }
                         .border_style(Focus::Table),
-                    ) // Example focus
+                    )
                     .style(
                         DefaultStyle {
                             focus: current_focus.clone(),
@@ -351,7 +448,7 @@ impl<'a> DataTable<'a> {
                     .block(history_block);
                 frame.render_widget(history_paragraph, content_area);
             }
-            _ => {} // Handle other tabs or default
+            _ => {}
         }
     }
 
@@ -367,12 +464,11 @@ impl<'a> DataTable<'a> {
             .add_modifier(Modifier::REVERSED)
             .fg(self.colors.selected_cell_style_fg);
 
-        let numbering_col_width = 4; // Width for "No." column (e.g., "  1 ", " 12 ", etc.)
+        let numbering_col_width = 4;
         let mut visible_columns = 0;
-        let mut total_width = numbering_col_width; // Include "No." column in width calculation
-        let available_width = area.width.saturating_sub(1); // Account for scrollbar
+        let mut total_width = numbering_col_width;
+        let available_width = area.width.saturating_sub(1);
 
-        // First pass: calculate how many columns can fit
         for width in self
             .data
             .column_widths()
@@ -386,8 +482,7 @@ impl<'a> DataTable<'a> {
             visible_columns += 1;
         }
 
-        // Second pass: adjust column widths if needed
-        let mut adjusted_widths = vec![numbering_col_width]; // Prepend "No." column width
+        let mut adjusted_widths = vec![numbering_col_width];
         let mut remaining_width = available_width.saturating_sub(numbering_col_width);
         let columns_to_show = self
             .data
@@ -415,8 +510,7 @@ impl<'a> DataTable<'a> {
             .cloned()
             .collect();
 
-        // Create header row, without a header cell for the "No." column
-        let header = std::iter::once(Cell::from("")) // Empty header for "No." column
+        let header = std::iter::once(Cell::from("#"))
             .chain(visible_headers.iter().map(|h| Cell::from(h.clone())))
             .collect::<Row>()
             .style(header_style)
@@ -452,12 +546,7 @@ impl<'a> DataTable<'a> {
             .row_highlight_style(selected_row_style)
             .column_highlight_style(selected_col_style)
             .cell_highlight_style(selected_cell_style)
-            .highlight_symbol(Text::from(vec![
-                "".into(),
-                bar.into(),
-                bar.into(),
-                "".into(),
-            ]))
+            .highlight_symbol(vec!["".into(), bar.into(), "".into()])
             .bg(self.colors.buffer_bg)
             .highlight_spacing(HighlightSpacing::Always)
             .block(
@@ -492,7 +581,7 @@ impl<'a> DataTable<'a> {
                 .end_symbol(None),
             area.inner(Margin {
                 vertical: 1,
-                horizontal: 1,
+                horizontal: 0,
             }),
             &mut self.vertical_scroll_state,
         );
@@ -502,10 +591,10 @@ impl<'a> DataTable<'a> {
                 .orientation(ScrollbarOrientation::HorizontalBottom)
                 .begin_symbol(None)
                 .end_symbol(None)
-                .thumb_symbol("━━━"),
+                .thumb_symbol(symbols::line::THICK_HORIZONTAL),
             area.inner(Margin {
                 horizontal: 1,
-                vertical: 1,
+                vertical: 0,
             }),
             &mut self.horizontal_scroll_state,
         );
