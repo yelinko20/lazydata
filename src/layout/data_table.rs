@@ -134,6 +134,8 @@ pub struct DataTable<'a> {
     pub tabs: StatefulTabs<'a>,
     pub status_message: Option<String>,
     pub elapsed: Duration,
+    page_size: usize,
+    pub current_page: usize,
 }
 
 impl<'a> DataTable<'a> {
@@ -150,7 +152,7 @@ impl<'a> DataTable<'a> {
                 Some(0)
             }),
             vertical_scroll_state: ScrollbarState::new(
-                (data.len().saturating_sub(1)) * ITEM_HEIGHT,
+                (data.rows.len().min(100).saturating_sub(1)) * ITEM_HEIGHT,
             ),
             horizontal_scroll_state: ScrollbarState::new(
                 data.column_widths.iter().sum::<u16>().saturating_sub(1) as usize,
@@ -162,6 +164,8 @@ impl<'a> DataTable<'a> {
             tabs,
             status_message: None,
             elapsed: Duration::ZERO,
+            page_size: 100,
+            current_page: 0,
         }
     }
 
@@ -169,13 +173,27 @@ impl<'a> DataTable<'a> {
         self.data.is_empty()
     }
 
+    pub fn total_pages(&self) -> usize {
+        if self.data.is_empty() {
+            return 1;
+        }
+        (self.data.len() as f64 / self.page_size as f64).ceil() as usize
+    }
+
+    fn get_current_page_rows(&self) -> &[Vec<String>] {
+        let start_index = self.current_page * self.page_size;
+        let end_index = (start_index + self.page_size).min(self.data.len());
+        &self.data.rows()[start_index..end_index]
+    }
+
     pub fn next_row(&mut self) {
         if self.is_empty() {
             return;
         }
 
+        let current_page_rows_len = self.get_current_page_rows().len();
         let i = match self.state.selected() {
-            Some(i) if i >= self.data.len() - 1 => 0,
+            Some(i) if i >= current_page_rows_len.saturating_sub(1) => 0,
             Some(i) => i + 1,
             None => 0,
         };
@@ -188,8 +206,9 @@ impl<'a> DataTable<'a> {
             return;
         }
 
+        let current_page_rows_len = self.get_current_page_rows().len();
         let i = match self.state.selected() {
-            Some(0) => self.data.len() - 1,
+            Some(0) => current_page_rows_len.saturating_sub(1),
             Some(i) => i - 1,
             None => 0,
         };
@@ -223,6 +242,28 @@ impl<'a> DataTable<'a> {
         }
     }
 
+    pub fn next_page(&mut self) {
+        if self.current_page < self.total_pages().saturating_sub(1) {
+            self.current_page += 1;
+            self.state.select(Some(0));
+            self.vertical_scroll_state = ScrollbarState::new(
+                (self.get_current_page_rows().len().saturating_sub(1)) * ITEM_HEIGHT,
+            );
+            self.vertical_scroll_state = self.vertical_scroll_state.position(0);
+        }
+    }
+
+    pub fn previous_page(&mut self) {
+        if self.current_page > 0 {
+            self.current_page = self.current_page.saturating_sub(1);
+            self.state.select(Some(0));
+            self.vertical_scroll_state = ScrollbarState::new(
+                (self.get_current_page_rows().len().saturating_sub(1)) * ITEM_HEIGHT,
+            );
+            self.vertical_scroll_state = self.vertical_scroll_state.position(0);
+        }
+    }
+
     pub fn next_color(&mut self) {
         self.color_index = (self.color_index + 1) % PALETTES.len();
     }
@@ -236,11 +277,27 @@ impl<'a> DataTable<'a> {
         self.colors = TableColors::new(&PALETTES[self.color_index]);
     }
 
-    pub fn jump_to_row(&mut self, row: usize) {
-        if row < self.data.len() {
-            self.state.select(Some(row));
-            self.vertical_scroll_state = self.vertical_scroll_state.position(row * ITEM_HEIGHT);
+    pub fn jump_to_absolute_row(&mut self, absolute_row: usize) {
+        if self.data.is_empty() {
+            return;
         }
+
+        let total_rows = self.data.len();
+        let target_absolute_row = absolute_row.min(total_rows.saturating_sub(1));
+
+        let target_page = target_absolute_row / self.page_size;
+        self.current_page = target_page; // Update current page
+
+        let row_on_page = target_absolute_row % self.page_size;
+        self.state.select(Some(row_on_page)); // Select row on the *new* page
+
+        // Recalculate vertical scroll state content length for the new page
+        self.vertical_scroll_state = ScrollbarState::new(
+            (self.get_current_page_rows().len().saturating_sub(1)) * ITEM_HEIGHT,
+        );
+        self.vertical_scroll_state = self
+            .vertical_scroll_state
+            .position(row_on_page * ITEM_HEIGHT);
     }
 
     #[allow(dead_code)]
@@ -256,7 +313,23 @@ impl<'a> DataTable<'a> {
         for (row_idx, row) in self.data.rows().iter().enumerate() {
             for (col_idx, cell) in row.iter().enumerate() {
                 if cell.to_lowercase().contains(&query.to_lowercase()) {
-                    return Some((row_idx, col_idx));
+                    let page_row_idx = row_idx % self.page_size;
+                    let target_page = row_idx / self.page_size;
+
+                    self.current_page = target_page; // Set current page
+                    self.state.select(Some(page_row_idx)); // Select row on the target page
+
+                    // Update vertical scroll state for the *new* page and its position
+                    self.vertical_scroll_state = ScrollbarState::new(
+                        (self.get_current_page_rows().len().saturating_sub(1)) * ITEM_HEIGHT,
+                    );
+                    self.vertical_scroll_state = self
+                        .vertical_scroll_state
+                        .position(page_row_idx * ITEM_HEIGHT);
+
+                    self.horizontal_scroll = col_idx; // Scroll to the found column
+                    self.horizontal_scroll_state = self.horizontal_scroll_state.position(col_idx);
+                    return Some((page_row_idx, col_idx));
                 }
             }
         }
@@ -265,12 +338,13 @@ impl<'a> DataTable<'a> {
 
     pub fn copy_selected_cell(&self) -> Option<String> {
         let content = match (self.state.selected(), self.state.selected_column()) {
-            (Some(row_idx), Some(col_idx)) => {
+            (Some(row_idx_on_page), Some(col_idx)) => {
+                let absolute_row_idx = self.current_page * self.page_size + row_idx_on_page;
                 let adjusted_col = col_idx.saturating_sub(1) + self.horizontal_scroll;
-                let row = self.data.rows().get(row_idx)?;
+                let row = self.data.rows().get(absolute_row_idx)?;
 
                 if col_idx == 0 {
-                    (row_idx + 1).to_string()
+                    (absolute_row_idx + 1).to_string()
                 } else if adjusted_col < row.len() {
                     row[adjusted_col].clone()
                 } else {
@@ -288,24 +362,26 @@ impl<'a> DataTable<'a> {
     }
 
     pub fn copy_selected_row(&self) -> Option<String> {
-        let selected_row_index = self.state.selected()?;
+        let selected_row_index_on_page = self.state.selected()?;
+        let absolute_selected_row_index =
+            self.current_page * self.page_size + selected_row_index_on_page;
 
         let headers = self.data.headers();
-        let row_data = self.data.rows().get(selected_row_index)?;
+        let row_data = self.data.rows().get(absolute_selected_row_index)?;
 
         if headers.len() != row_data.len() {
             eprintln!(
                 "Error: Headers count ({}) does not match row data count ({}) for selected row index {}. Cannot form proper JSON.",
                 headers.len(),
                 row_data.len(),
-                selected_row_index
+                absolute_selected_row_index
             );
             return None;
         }
 
         let row_as_json_object: HashMap<String, Value> = headers
             .iter()
-            .zip(row_data.iter()) // Pair headers with cell values
+            .zip(row_data.iter())
             .map(|(header, cell_value)| {
                 let json_value = if cell_value.eq_ignore_ascii_case("null")
                     || cell_value.eq_ignore_ascii_case("[null]")
@@ -348,7 +424,16 @@ impl<'a> DataTable<'a> {
         Paragraph::new(title).block(title_block)
     }
 
+    fn create_padded_cell_text(content: &str) -> Text<'_> {
+        Text::from(vec![Line::raw(""), Line::raw(content), Line::raw("")])
+    }
+
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, current_focus: &Focus) {
+        // Optimization: Create DefaultStyle once for this `draw` call
+        let app_style = DefaultStyle {
+            focus: current_focus.clone(),
+        };
+
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -365,8 +450,9 @@ impl<'a> DataTable<'a> {
         let base_style = Style::default().bg(COLOR_BLOCK_BG);
         let total_rows_str = format!("Total Rows: {}", self.data.len());
         let query_done_str = format!("Query Complete: {} ms", self.elapsed.as_millis());
+        let pagination_info_str = format!("Page: {}/{}", self.current_page + 1, self.total_pages());
 
-        let tab_lines = [total_rows_str, query_done_str]
+        let tab_lines = [total_rows_str, query_done_str, pagination_info_str]
             .iter()
             .map(|text| Line::from(Span::styled(text.clone(), base_style)))
             .collect::<Vec<_>>();
@@ -375,22 +461,13 @@ impl<'a> DataTable<'a> {
             .select(0)
             .highlight_style(base_style)
             .divider(symbols::line::VERTICAL)
-            .style(
-                DefaultStyle {
-                    focus: current_focus.clone(),
-                }
-                .block_style(),
-            );
+            .style(app_style.block_style());
         frame.render_widget(query_info_tabs, query_info_area);
 
-        let tabs_widget = self.tabs.widget().block(
-            Block::default().border_style(
-                DefaultStyle {
-                    focus: current_focus.clone(),
-                }
-                .border_style(Focus::Table),
-            ),
-        );
+        let tabs_widget = self
+            .tabs
+            .widget()
+            .block(Block::default().border_style(app_style.border_style(Focus::Table)));
         frame.render_widget(tabs_widget, tab_area);
 
         match self.tabs.index {
@@ -398,33 +475,18 @@ impl<'a> DataTable<'a> {
                 self.set_colors();
                 if self.is_empty() {
                     let message = "No data output. Execute a query to get output";
-                    let status_widget = self.build_status_paragraph(
-                        message,
-                        &DefaultStyle {
-                            focus: current_focus.clone(),
-                        },
-                    );
+                    let status_widget = self.build_status_paragraph(message, &app_style);
                     frame.render_widget(status_widget, content_area);
                 } else {
-                    self.render_table(frame, content_area, current_focus);
+                    self.render_table(frame, content_area, current_focus); // current_focus still passed for render_table's internal style
                     self.render_scrollbar(frame, content_area);
                 }
             }
             1 => {
                 let messages_block = Block::default()
                     .borders(Borders::ALL)
-                    .border_style(
-                        DefaultStyle {
-                            focus: current_focus.clone(),
-                        }
-                        .border_style(Focus::Table),
-                    )
-                    .style(
-                        DefaultStyle {
-                            focus: current_focus.clone(),
-                        }
-                        .block_style(),
-                    );
+                    .border_style(app_style.border_style(Focus::Table))
+                    .style(app_style.block_style());
                 let message = self.status_message.clone().unwrap_or("".to_string());
                 let messages_paragraph = Paragraph::new(message).block(messages_block);
                 frame.render_widget(messages_paragraph, content_area);
@@ -432,18 +494,8 @@ impl<'a> DataTable<'a> {
             2 => {
                 let history_block = Block::default()
                     .borders(Borders::ALL)
-                    .border_style(
-                        DefaultStyle {
-                            focus: current_focus.clone(),
-                        }
-                        .border_style(Focus::Table),
-                    )
-                    .style(
-                        DefaultStyle {
-                            focus: current_focus.clone(),
-                        }
-                        .block_style(),
-                    );
+                    .border_style(app_style.border_style(Focus::Table))
+                    .style(app_style.block_style());
                 let history_paragraph = Paragraph::new("This is where query history would appear.")
                     .block(history_block);
                 frame.render_widget(history_paragraph, content_area);
@@ -453,28 +505,36 @@ impl<'a> DataTable<'a> {
     }
 
     fn render_table(&mut self, frame: &mut Frame, area: Rect, current_focus: &Focus) {
-        let header_style = Style::default()
-            .fg(self.colors.header_fg)
-            .bg(self.colors.header_bg);
+        // Optimization: Create DefaultStyle once for this `render_table` call
+        let table_widget_style = DefaultStyle {
+            focus: current_focus.clone(),
+        };
+
+        // Extract all needed fields from self before any borrows
+        let colors = &self.colors;
+        let horizontal_scroll = self.horizontal_scroll;
+        let page_size = self.page_size;
+        let current_page = self.current_page;
+        let item_height = ITEM_HEIGHT;
+        let data_column_widths = self.data.column_widths().to_vec();
+        let data_headers = self.data.headers().to_vec();
+        let get_current_page_rows = self.get_current_page_rows().to_vec();
+
+        let header_style = Style::default().fg(colors.header_fg).bg(colors.header_bg);
         let selected_row_style = Style::default()
             .add_modifier(Modifier::REVERSED)
-            .fg(self.colors.selected_row_style_fg);
-        let selected_col_style = Style::default().fg(self.colors.selected_column_style_fg);
+            .fg(colors.selected_row_style_fg);
+        let selected_col_style = Style::default().fg(colors.selected_column_style_fg);
         let selected_cell_style = Style::default()
             .add_modifier(Modifier::REVERSED)
-            .fg(self.colors.selected_cell_style_fg);
+            .fg(colors.selected_cell_style_fg);
 
         let numbering_col_width = 4;
         let mut visible_columns = 0;
         let mut total_width = numbering_col_width;
         let available_width = area.width.saturating_sub(1);
 
-        for width in self
-            .data
-            .column_widths()
-            .iter()
-            .skip(self.horizontal_scroll)
-        {
+        for width in data_column_widths.iter().skip(horizontal_scroll) {
             if total_width + width > available_width {
                 break;
             }
@@ -482,88 +542,73 @@ impl<'a> DataTable<'a> {
             visible_columns += 1;
         }
 
-        let mut adjusted_widths = vec![numbering_col_width];
+        let mut adjusted_widths = vec![Constraint::Length(numbering_col_width)]; // Directly use Constraint
         let mut remaining_width = available_width.saturating_sub(numbering_col_width);
-        let columns_to_show = self
-            .data
-            .column_widths()
-            .iter()
-            .skip(self.horizontal_scroll)
-            .take(visible_columns);
 
-        for &width in columns_to_show {
+        for &width in data_column_widths
+            .iter()
+            .skip(horizontal_scroll)
+            .take(visible_columns)
+        {
             if remaining_width >= width {
-                adjusted_widths.push(width);
+                adjusted_widths.push(Constraint::Length(width)); // Directly use Constraint
                 remaining_width -= width;
             } else {
-                adjusted_widths.push(remaining_width);
+                adjusted_widths.push(Constraint::Length(remaining_width)); // Directly use Constraint
                 break;
             }
         }
 
-        let visible_headers: Vec<_> = self
-            .data
-            .headers()
+        let visible_headers: Vec<_> = data_headers
             .iter()
-            .skip(self.horizontal_scroll)
+            .skip(horizontal_scroll)
             .take(visible_columns)
             .cloned()
             .collect();
 
+        // Optimization: Create header `Row`
         let header = std::iter::once(Cell::from("#"))
             .chain(visible_headers.iter().map(|h| Cell::from(h.clone())))
             .collect::<Row>()
             .style(header_style)
             .height(1);
 
-        let rows = self.data.rows().iter().enumerate().map(|(i, row)| {
+        // Modified: Iterate over current page rows
+        let rows = get_current_page_rows.iter().enumerate().map(|(i, row)| {
             let color = if i % 2 == 0 {
-                self.colors.normal_row_color
+                colors.normal_row_color
             } else {
-                self.colors.alt_row_color
+                colors.alt_row_color
             };
 
-            let number_cell = Cell::from(Text::from(format!("\n{}\n", i + 1)));
+            let absolute_row_number = current_page * page_size + i + 1;
+            let number_cell = Cell::from(Text::from(format!("\n{}\n", absolute_row_number)));
+
             let data_cells = row
                 .iter()
-                .skip(self.horizontal_scroll)
+                .skip(horizontal_scroll)
                 .take(visible_columns)
-                .map(|text| Cell::from(Text::from(format!("\n{text}\n"))));
+                .map(|text| Cell::from(Self::create_padded_cell_text(text.as_str())));
 
             Row::new(std::iter::once(number_cell).chain(data_cells))
-                .style(Style::new().fg(self.colors.row_fg).bg(color))
-                .height(ITEM_HEIGHT as u16)
+                .style(Style::new().fg(colors.row_fg).bg(color))
+                .height(item_height as u16)
         });
 
         let bar = " █ ";
-        let constraints = adjusted_widths
-            .iter()
-            .map(|&w| Constraint::Length(w))
-            .collect::<Vec<_>>();
-
-        let t = Table::new(rows, constraints)
+        let t = Table::new(rows, adjusted_widths)
             .header(header)
             .row_highlight_style(selected_row_style)
             .column_highlight_style(selected_col_style)
             .cell_highlight_style(selected_cell_style)
             .highlight_symbol(vec!["".into(), bar.into(), "".into()])
-            .bg(self.colors.buffer_bg)
+            .bg(colors.buffer_bg)
             .highlight_spacing(HighlightSpacing::Always)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(
-                        DefaultStyle {
-                            focus: current_focus.clone(),
-                        }
-                        .border_style(Focus::Table),
-                    )
-                    .style(
-                        DefaultStyle {
-                            focus: current_focus.clone(),
-                        }
-                        .block_style(),
-                    ),
+                    .border_style(table_widget_style.border_style(Focus::Table)) // Use optimized style
+                    .style(table_widget_style.block_style()), // Use optimized style
             );
 
         frame.render_stateful_widget(t, area, &mut self.state);
@@ -573,6 +618,10 @@ impl<'a> DataTable<'a> {
         if self.data.is_empty() {
             return;
         }
+
+        self.vertical_scroll_state = self
+            .vertical_scroll_state
+            .content_length(self.get_current_page_rows().len().saturating_sub(1) * ITEM_HEIGHT);
 
         frame.render_stateful_widget(
             Scrollbar::default()

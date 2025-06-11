@@ -260,6 +260,7 @@ impl App<'_> {
         }
         Ok(())
     }
+
     fn handle_data_table_keys(&mut self, key: KeyCode) {
         use KeyCode::*;
         match key {
@@ -269,19 +270,22 @@ impl App<'_> {
             Char('j') | Down => self.data_table.next_row(),
             Char('k') | Up => self.data_table.previous_row(),
 
-            Char('l') => self.data_table.next_column(),
-            Char('h') => self.data_table.previous_column(),
-
-            Char('>') | Right => self.data_table.scroll_right(),
-            Char('<') | Left => self.data_table.scroll_left(),
+            Char('>') => self.data_table.scroll_right(),
+            Char('<') => self.data_table.scroll_left(),
 
             Char('n') => self.data_table.next_color(),
             Char('p') => self.data_table.previous_color(),
 
-            Char('g') => self.data_table.jump_to_row(0),
+            PageDown => self.data_table.next_page(),
+            PageUp => self.data_table.previous_page(),
+            Char(' ') => self.data_table.next_page(),
+
+            Char('l') | Right => self.data_table.next_column(),
+            Char('h') | Left => self.data_table.previous_column(),
+            Char('g') => self.data_table.jump_to_absolute_row(0),
             Char('G') => self
                 .data_table
-                .jump_to_row(self.data_table.data.len().saturating_sub(1)),
+                .jump_to_absolute_row(self.data_table.data.len().saturating_sub(1)),
 
             Char('w') => self.data_table.adjust_column_width(1),
             Char('W') => self.data_table.adjust_column_width(-1),
@@ -308,7 +312,6 @@ impl App<'_> {
             _ => {}
         }
     }
-
     fn handle_sidebar_keys(&mut self, key: KeyCode) {
         use KeyCode::*;
         match key {
